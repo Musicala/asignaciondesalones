@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>Horario · Musicala</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;600;800;900&family=Sacramento&display=swap" rel="stylesheet" />
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="./styles.css" />
+
+  <style>
+    [hidden]{ display:none !important; }
+
+    .sr-only{
+      position:absolute!important;
+      width:1px;height:1px;
+      padding:0;margin:-1px;
+      overflow:hidden;clip:rect(0,0,0,0);
+      white-space:nowrap;border:0;
+    }
+
+    /* Helpers para módulos “vivo” sin depender 100% de styles.css */
+    .vivoWrap{ padding:14px; }
+    .vivoGrid{
+      display:grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap:14px;
+      align-items:stretch;
+    }
+    .vivoCard{
+      background: rgba(255,255,255,.88);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow2);
+      overflow:hidden;
+      min-height: 380px;
+    }
+    .vivoHead{
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid var(--line);
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:10px;
+      background:
+        radial-gradient(520px 180px at 18% 0%, rgba(12,65,196,.10), transparent 60%),
+        radial-gradient(520px 180px at 82% 0%, rgba(206,0,113,.10), transparent 60%),
+        rgba(255,255,255,.70);
+    }
+    .vivoTitle{
+      font-weight:1000;
+      letter-spacing:-.3px;
+      font-size: 22px;
+    }
+    .vivoSub{
+      margin-top:4px;
+      color: var(--muted);
+      font-weight: 800;
+      font-size: 13px;
+    }
+    .vivoPill{
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-weight: 950;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.80);
+      box-shadow: var(--shadow2);
+      white-space: nowrap;
+    }
+    .vivoBody{ padding: 12px 14px 14px; }
+    .vivoRooms{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .vivoRoom{
+      border: 1px solid rgba(12,65,196,.20);
+      background: rgba(255,255,255,.92);
+      border-radius: 16px;
+      padding: 12px 12px;
+      box-shadow: 0 10px 22px rgba(15,23,42,.06);
+      min-height: 74px;
+      display:flex;
+      flex-direction:column;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .vivoRoom .label{
+      font-size: 12px;
+      font-weight: 1000;
+      color: rgba(15,23,42,.60);
+      letter-spacing:.2px;
+      text-transform: uppercase;
+    }
+    .vivoRoom .value{
+      font-size: 16px;
+      font-weight: 1000;
+      color: var(--ink);
+      line-height: 1.12;
+      white-space: pre-line;
+    }
+    .vivoRoom .meta{
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .vivoFooterNote{
+      padding: 10px 14px 14px;
+      color: var(--muted);
+      font-weight: 800;
+      font-size: 12px;
+    }
+
+    @media (max-width: 1100px){
+      .vivoGrid{ grid-template-columns: 1fr; }
+      .vivoRooms{ grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 560px){
+      .vivoRooms{ grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+
+<body>
+  <a class="sr-only" href="#main">Saltar al contenido</a>
+
+  <!-- ===== TOPBAR ===== -->
+  <header class="topbar" aria-label="Encabezado Musicala">
+    <div class="brand">
+      <div class="logoWrap" aria-hidden="true">
+        <img class="logo" alt="Musicala" src="https://static.wixstatic.com/media/85afce_3adb3865c88a492b93a8bf2dc69049c3~mv2.png" />
+      </div>
+      <div class="brandText">
+        <div class="title">Horario Musicala</div>
+        <div class="tagline" style="font-family:Sacramento,cursive;font-size:22px;">vida · alma · arte</div>
+      </div>
+    </div>
+
+    <div class="topControls" aria-label="Controles">
+      <div class="ctl">
+        <label for="selHoja">Día:</label>
+        <select id="selHoja" class="select" aria-label="Seleccionar día">
+          <option value="Lunes">Lunes</option>
+          <option value="Martes">Martes</option>
+          <option value="Miércoles">Miércoles</option>
+          <option value="Jueves">Jueves</option>
+          <option value="Viernes">Viernes</option>
+          <option value="Sábado">Sábado</option>
+          <option value="Domingo">Domingo</option>
+        </select>
+      </div>
+
+      <div class="ctl">
+        <span style="font-weight:900;">Editar</span>
+        <label class="switch" title="Modo edición">
+          <input id="toggleEdit" type="checkbox" />
+          <span class="slider" aria-hidden="true"></span>
+        </label>
+      </div>
+
+      <button id="btnFull" class="btnTop" type="button" title="Pantalla completa">
+        Pantalla completa
+      </button>
+
+      <div class="pillStatus" aria-live="polite" title="Estado de conexión">
+        <span id="dot" class="dot" aria-hidden="true"></span>
+        <span id="netText">sincronizando…</span>
+      </div>
+
+      <div id="clock" class="clock" aria-label="Reloj"></div>
+    </div>
+  </header>
+
+  <!-- ===== TABS (vistas) ===== -->
+  <nav class="tabs" role="tablist" aria-label="Vistas">
+    <button class="tab active" role="tab" aria-selected="true" data-tab="tabla" type="button">Tabla</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="vivo" type="button">En vivo (-1 / ahora / +1)</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="salas" type="button">Salones</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="docentes" type="button">Docentes</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="buscar" type="button">Buscar</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="kpis" type="button">KPIs</button>
+  </nav>
+
+  <!-- ===== MAIN ===== -->
+  <main id="main" class="main" tabindex="-1">
+    <section class="panel" aria-label="Panel principal">
+      <div class="panelHead">
+        <div class="statusLine" aria-live="polite">
+          <div class="statusPill">
+            <span id="miniDot" class="miniDot" aria-hidden="true"></span>
+            <span id="loadText">Cargando…</span>
+          </div>
+          <div class="statusMsg" id="statusMsg">Inicializando…</div>
+        </div>
+
+        <div class="actionsGhost" aria-hidden="true">
+          <span>Editar</span>
+          <span>Cerrar</span>
+          <span>Copiar</span>
+          <span>Mover</span>
+        </div>
+      </div>
+
+      <!-- ===== TAB: TABLA ===== -->
+      <section id="tab-tabla" data-view="tabla">
+        <div class="tableWrap" aria-label="Tabla de horario">
+          <table class="grid" aria-label="Horario Musicala">
+            <thead id="thead"></thead>
+            <tbody id="tbody">
+              <tr>
+                <td style="padding:18px;color:var(--muted);font-weight:900">
+                  Cargando tabla…
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="padding:12px 14px;color:var(--muted);font-weight:800">
+          Tip: activa <strong>Editar</strong> para crear/modificar bloques.
+          <br />
+          Drag & drop: arrastra para mover. Mantén <strong>Alt/Ctrl</strong> para copiar.
+          <br />
+          <span style="opacity:.85">Nota: el “arrastrar sin abrir modal” se controla desde app.js (ya lo ajustamos en la siguiente iteración).</span>
+        </div>
+      </section>
+
+      <!-- ===== TAB: EN VIVO ===== -->
+      <section id="tab-vivo" data-view="vivo" hidden class="vivoWrap" aria-label="Vista en vivo">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+          <span style="font-weight:1000;font-size:15px;">Vista tipo turnos</span>
+          <span style="color:var(--muted);font-weight:800;">Anterior / Ahora / Siguiente por salón</span>
+
+          <div style="margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button id="btnVivoPrev" class="btnTop" type="button" title="Ver franja anterior">← -1 franja</button>
+            <button id="btnVivoNow" class="btnTop" type="button" title="Volver a la franja actual">Ahora</button>
+            <button id="btnVivoNext" class="btnTop" type="button" title="Ver franja siguiente">+1 franja →</button>
+
+            <div class="statusPill" title="Franja en vivo">
+              <span style="font-weight:1000;">Franja:</span>
+              <span id="vivoSlotLabel" style="font-weight:1000;color:var(--ink);">--:-- a --:--</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="vivoGrid">
+          <!-- ANTERIOR -->
+          <article class="vivoCard" aria-label="Anterior">
+            <div class="vivoHead">
+              <div>
+                <div class="vivoTitle">Anterior</div>
+                <div class="vivoSub">Grupos que acaban de terminar</div>
+              </div>
+              <div id="vivoPrevTime" class="vivoPill">--:-- a --:--</div>
+            </div>
+            <div class="vivoBody">
+              <div id="vivoPrevWrap" class="vivoRooms" aria-label="Anterior por salón">
+                <!-- app.js renderiza aquí -->
+              </div>
+            </div>
+          </article>
+
+          <!-- AHORA -->
+          <article class="vivoCard" aria-label="Ahora">
+            <div class="vivoHead">
+              <div>
+                <div class="vivoTitle">Ahora</div>
+                <div class="vivoSub">Grupos en clase</div>
+              </div>
+              <div id="vivoNowTime" class="vivoPill" style="background:linear-gradient(135deg, rgba(12,65,196,.16), rgba(206,0,113,.12));border-color:rgba(12,65,196,.25);">
+                --:-- a --:--
+              </div>
+            </div>
+            <div class="vivoBody">
+              <div id="vivoNowWrap" class="vivoRooms" aria-label="Ahora por salón">
+                <!-- app.js renderiza aquí -->
+              </div>
+            </div>
+          </article>
+
+          <!-- SIGUIENTE -->
+          <article class="vivoCard" aria-label="Siguiente">
+            <div class="vivoHead">
+              <div>
+                <div class="vivoTitle">Siguiente</div>
+                <div class="vivoSub">Próximos grupos por salón</div>
+              </div>
+              <div id="vivoNextTime" class="vivoPill">--:-- a --:--</div>
+            </div>
+            <div class="vivoBody">
+              <div id="vivoNextWrap" class="vivoRooms" aria-label="Siguiente por salón">
+                <!-- app.js renderiza aquí -->
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="vivoFooterNote">
+          Se actualiza automáticamente (la lógica vive en app.js). Si la pestaña no está activa, algunos navegadores pausan timers porque les da pereza trabajar.
+        </div>
+      </section>
+
+      <!-- ===== TAB: SALAS ===== -->
+      <section id="tab-salas" data-view="salas" hidden style="padding:14px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <span style="font-weight:1000;">Vista por salones</span>
+          <span style="color:var(--muted);font-weight:800;">(renderiza app.js)</span>
+        </div>
+        <div id="salasWrap" aria-label="Salones"></div>
+      </section>
+
+      <!-- ===== TAB: DOCENTES ===== -->
+      <section id="tab-docentes" data-view="docentes" hidden style="padding:14px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <input id="txtDocente" class="select" style="border-radius:14px;" type="text" placeholder="Filtrar por docente…" />
+          <button id="btnBuscarDocente" class="btnTop" type="button">Buscar</button>
+          <button id="btnDocentesTodos" class="btnTop" type="button">Todos</button>
+        </div>
+        <div id="docentesWrap" aria-label="Docentes"></div>
+      </section>
+
+      <!-- ===== TAB: BUSCAR ===== -->
+      <section id="tab-buscar" data-view="buscar" hidden style="padding:14px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <input id="txtQuery" class="select" style="border-radius:14px;" type="text" placeholder="Buscar grupo, docente, nota…" />
+          <button id="btnBuscar" class="btnTop" type="button">Buscar</button>
+          <button id="btnBuscarClear" class="btnTop" type="button">Limpiar</button>
+        </div>
+        <div id="buscarWrap" aria-label="Resultados de búsqueda"></div>
+      </section>
+
+      <!-- ===== TAB: KPIs ===== -->
+      <section id="tab-kpis" data-view="kpis" hidden style="padding:14px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <button id="btnKpisRefresh" class="btnTop" type="button">Actualizar KPIs</button>
+          <span style="color:var(--muted);font-weight:800;">(renderiza app.js)</span>
+        </div>
+        <div id="kpisWrap" aria-label="KPIs"></div>
+      </section>
+
+    </section>
+  </main>
+
+  <!-- ===== MODAL (Crear/Editar bloque) ===== -->
+  <div id="modalBack" class="modalBack" hidden role="dialog" aria-modal="true" aria-label="Editar bloque">
+    <div class="modal" role="document">
+      <div class="modalHead">
+        <div class="modalTitle" id="modalTitle">Editar bloque</div>
+        <button id="btnCloseModal" class="iconBtn" type="button" aria-label="Cerrar">Cerrar</button>
+      </div>
+
+      <div class="modalBody">
+        <div class="formGrid">
+          <div class="field">
+            <span>Día</span>
+            <input id="mHoja" type="text" readonly />
+          </div>
+
+          <div class="field">
+            <span>Salón</span>
+            <input id="mSalon" type="text" readonly />
+          </div>
+
+          <div class="field">
+            <span>Hora inicio</span>
+            <input id="mStart" type="text" readonly />
+          </div>
+
+          <div class="field">
+            <span>Hora fin</span>
+            <select id="mEnd"></select>
+          </div>
+
+          <div class="field">
+            <span>Grupo</span>
+            <input id="mGrupo" type="text" placeholder="Ej: Musicalitos 4A" autocomplete="off" />
+          </div>
+
+          <div class="field">
+            <span>Docente</span>
+            <input id="mDocente" type="text" placeholder="Ej: Angie" autocomplete="off" />
+            <div style="margin-top:6px;color:var(--muted);font-weight:800;font-size:12px;">
+              Tip: el color sale automático por docente 🎨
+            </div>
+          </div>
+
+          <div class="field">
+            <span>Modalidad</span>
+            <input id="mModalidad" type="text" placeholder="Sede / Virtual / Hogar" autocomplete="off" />
+          </div>
+
+          <div class="field">
+            <span>Nota</span>
+            <input id="mNote" type="text" placeholder="Opcional" autocomplete="off" />
+          </div>
+
+          <div class="field span2">
+            <span>Texto final (auto / editable)</span>
+            <input id="mText" type="text" placeholder="Grupo · Docente · Modalidad · Nota" autocomplete="off" />
+            <div style="margin-top:6px;color:var(--muted);font-weight:800;font-size:12px;">
+              Guardado recomendado: <strong>Grupo · Docente · Modalidad · Nota</strong> (solo lo que exista).
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modalFoot">
+        <button id="btnSave" class="btn primary" type="button">Guardar</button>
+        <button id="btnCancel" class="btn" type="button">Cancelar</button>
+        <div class="spacer"></div>
+        <button id="btnDelete" class="btn danger" type="button">Borrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App config -->
+  <script>
+    window.APP_CONFIG = {
+      days: ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"],
+      slotMinutes: 30,
+      startMin: 9*60 + 30,
+      endMin: 20*60,
+      rooms: [
+        "Salón 1:\nBaile",
+        "Salón 2:\nArtes",
+        "Salón 3:\nMusicalitos",
+        "Salón 4:\nMultipropósito",
+        "Salón 5:\nMúsica",
+        "Salón 6:\nMultipropósito",
+        "Salón 7:\nMultipropósito",
+        "Salón 8:\nMusicalitos",
+        "Salón 9:\nBaile",
+        "Salón 10:\nMultipropósito"
+      ],
+      docentesPalette: {
+        "Alek Caballero": "#FCA5A5",
+        "Catalina Medina": "#A7F3D0",
+        "Emily Bejarano": "#C7D2FE",
+        "Laura Sánchez": "#C7D2FE",
+        "Angie Nitola": "#FDE68A"
+      }
+    };
+  </script>
+
+  <!-- App -->
+  <script type="module" src="./app.js"></script>
+
+  <!-- Tabs handler (solo UI) + helpers globales para app.js -->
+  <script>
+    (function tabs(){
+      const tabs = Array.from(document.querySelectorAll('.tab[role="tab"]'));
+      const views = Array.from(document.querySelectorAll('[data-view]'));
+
+      function setTab(id){
+        tabs.forEach(t=>{
+          const on = t.dataset.tab === id;
+          t.classList.toggle('active', on);
+          t.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        views.forEach(v=>{
+          v.hidden = (v.dataset.view !== id);
+        });
+
+        // hint para app.js (si quiere reaccionar)
+        window.__ACTIVE_TAB__ = id;
+        window.dispatchEvent(new CustomEvent('tabchange', { detail:{ tab:id } }));
+      }
+
+      tabs.forEach(t=>{
+        t.addEventListener('click', ()=> setTab(t.dataset.tab));
+      });
+
+      // Exponer helper por si app.js lo necesita
+      window.setActiveTab = setTab;
+
+      // Default
+      setTab('tabla');
+    })();
+  </script>
+</body>
+</html>
