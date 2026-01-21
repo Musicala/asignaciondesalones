@@ -6,7 +6,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 /* =============================================================================
-  Horario Musicala · app.js (Firebase) — vPRO MAX++ (Robust Drag + Cleaner Hover + Safer Data)
+  Horario Musicala · app.js (Firebase) — vPRO MAX++ (GitHub-safe Auth + Robust Drag)
   -----------------------------------------------------------------------------
   ✅ Tabla 30 min x 10 salones (rowSpan por duración)
   ✅ Modo edición (badge fijo + UI)
@@ -18,10 +18,9 @@ import {
   ✅ Tabs funcionales: En Vivo, Salones, Docentes, Buscar, KPIs
   ✅ Estado red: cache vs server (snapshot.metadata)
   ✅ PERFORMANCE: delegation (un solo listener) + render eficiente
-  ✅ FIX: hora compacta apilada (timeStack)
-  ✅ FIX: badge “Mover/Copiar” NO se queda pegado (pointercancel/blur/visibilitychange)
   ✅ FIX: hover dropTarget sin parpadeo (track last cell)
-  ✅ FIX: datos Firestore tolerantes (casts num + defaults)
+  ✅ FIX: badge “Mover/Copiar” NO se queda pegado (pointercancel/blur/visibilitychange)
+  ✅ GitHub Pages FIX: la tabla NO depende de que Auth anónimo funcione (fallback read-only)
 ============================================================================= */
 
 /* ===== Config (window.APP_CONFIG) ===== */
@@ -63,12 +62,10 @@ const toHHMM = (m) => {
   return `${pad2(h)}:${pad2(mm)}`;
 };
 
-// Texto (para labels normales)
 function formatRange(startMin, endMin){
   return `${toHHMM(startMin)} a ${toHHMM(endMin)}`;
 }
 
-// HTML compacto apilado SOLO para columna "Hora"
 function labelRangeHTML(slotStart){
   const a = toHHMM(slotStart);
   const b = toHHMM(slotStart + STEP_MIN);
@@ -170,35 +167,24 @@ const $dragBadgeText = qs('#dragBadgeText');
 let EDIT_MODE = false;
 let currentHoja = $selHoja?.value || 'Lunes';
 
-let blocks = [];              // docs del día (hoja actual)
-let blocksById = new Map();   // id -> block
+let blocks = [];
+let blocksById = new Map();
 let unsub = null;
 
-let modalCtx = null;          // { mode:'new'|'edit', id?, hoja, salonIndex, startMin }
-let modalManualText = false;  // si el usuario toca mText a mano
+let modalCtx = null;
+let modalManualText = false;
 
 // En vivo
-let vivoOffset = 0;           // -1, 0, +1... en slots
+let vivoOffset = 0;
 let vivoTimer = null;
+
+// Auth/runtime
+let AUTH_OK = false;      // true cuando hay sesión anónima garantizada
+let READ_ONLY = false;    // si no hay auth, bloquea edición
+let LAST_ERR = null;
 
 // Pointer Drag state
 let dragState = null;
-/*
-dragState = {
-  phase:'armed'|'dragging',
-  pointerId,
-  sourceEl,
-  downX, downY,
-  block,
-  copy,
-  dur,
-  ghostEl,
-  started:false,
-  didDrag:false,
-  rafPending:false,
-  lastHoverTd:null
-}
-*/
 const DRAG_THRESHOLD_PX = 7;
 
 /* ===== UI helpers ===== */
@@ -270,6 +256,11 @@ function colorForDocente(docente, text){
 
 /* ===== Modal ===== */
 function openModal(ctx, existing=null){
+  if (READ_ONLY){
+    alert('Estás en modo solo lectura (sin sesión). Para editar necesitas Auth anónimo habilitado.');
+    return;
+  }
+
   modalCtx = ctx;
   modalManualText = false;
 
@@ -542,11 +533,9 @@ function ensureMiniCardStylesOnce(){
     .kpiValue{ margin-top:6px; font-weight: 1100; font-size: 22px; letter-spacing:-.3px; }
     .kpiHint{ margin-top:6px; color: var(--muted); font-weight: 800; font-size: 12px; }
 
-    /* Drag targets */
     .dropTarget{ outline: 2px dashed rgba(12,65,196,.35); outline-offset: -4px; }
     .dropInvalid{ outline-color: rgba(239,68,68,.55) !important; background: rgba(239,68,68,.06) !important; }
 
-    /* Hora apilada compacta */
     .timeStack{
       display:flex;
       flex-direction:column;
@@ -570,7 +559,7 @@ function renderGrid(){
   ensureMiniCardStylesOnce();
 
   const map = indexBlocksForGrid();
-  const skip = new Set(); // `${slotMin}|${salonIndex}`
+  const skip = new Set();
 
   const frag = document.createDocumentFragment();
 
@@ -622,9 +611,9 @@ function renderGrid(){
           </div>
         `;
 
-        td.style.cursor = EDIT_MODE ? 'grab' : 'default';
+        td.style.cursor = (EDIT_MODE && !READ_ONLY) ? 'grab' : 'default';
       }else{
-        if (EDIT_MODE){
+        if (EDIT_MODE && !READ_ONLY){
           td.classList.add('tdCenter');
           td.innerHTML = `<button class="pillEdit" type="button">EDIT</button>`;
         }else{
@@ -663,7 +652,7 @@ function unbindDragSafetyListeners(){
 }
 
 function armPointer(ev, block){
-  if (!EDIT_MODE) return;
+  if (!EDIT_MODE || READ_ONLY) return;
   if (ev.button !== 0) return;
   if ($modalBack && $modalBack.hidden === false) return;
 
@@ -690,7 +679,6 @@ function armPointer(ev, block){
 
   showDragBadge(true, copy ? 'Copiar' : 'Mover');
 
-  // Captura pointer (si se puede)
   try{ ev.currentTarget?.setPointerCapture?.(ev.pointerId); }catch(_){}
 
   unbindDragSafetyListeners();
@@ -703,7 +691,6 @@ function onPointerMove(ev){
 
   ev.preventDefault();
 
-  // copy “en vivo”
   const copyNow = ev.altKey || ev.ctrlKey || ev.metaKey;
   if (copyNow !== dragState.copy){
     dragState.copy = copyNow;
@@ -726,7 +713,6 @@ function onPointerMove(ev){
 
   if (!dragState.started) return;
 
-  // Throttle hover UI con RAF (quita parpadeos y consumo)
   if (dragState.rafPending) {
     moveGhost(ev, dragState);
     return;
@@ -753,7 +739,6 @@ function onPointerUp(ev){
 
   unbindDragSafetyListeners();
 
-  // soltar pointer capture
   try{
     dragState.sourceEl?.releasePointerCapture?.(dragState.pointerId);
   }catch(_){}
@@ -861,7 +846,6 @@ function clearDropTargets(forceAll=false){
     return;
   }
 
-  // Limpieza optimizada: solo la celda anterior
   const last = dragState?.lastHoverTd;
   if (last){
     last.classList.remove('dropTarget','dropInvalid');
@@ -873,9 +857,8 @@ function onDragHoverXY(x, y){
 
   const td = getCellUnderXY(x, y);
 
-  // Si no cambió de celda, no hagas show/hide como loco
   if (td && dragState.lastHoverTd === td){
-    // igual recalculamos invalid si cambió copy (pero eso ya lo reflejamos con clase)
+    // misma celda, no limpies para no parpadear
   } else {
     clearDropTargets(false);
   }
@@ -926,7 +909,6 @@ async function finalizeDrag(ev){
 
   if (invalid) return;
 
-  // si quedó igual, no hacer nada
   if (!dragState.copy && startMin === dragState.block.startMin && targetSalon === dragState.block.salonIndex){
     return;
   }
@@ -962,11 +944,10 @@ function bindGridDelegationOnce(){
   if (!$tbody || $tbody.__bound) return;
   $tbody.__bound = true;
 
-  // Click en celdas vacías (EDIT)
   $tbody.addEventListener('click', (ev)=>{
     const btn = ev.target?.closest?.('button.pillEdit');
     if (!btn) return;
-    if (!EDIT_MODE) return;
+    if (!EDIT_MODE || READ_ONLY) return;
 
     const td = btn.closest('td');
     if (!td) return;
@@ -977,9 +958,8 @@ function bindGridDelegationOnce(){
     openModal({ mode:'new', hoja:currentHoja, salonIndex, startMin:slotMin }, null);
   });
 
-  // Pointerdown sobre bloque (delegation)
   $tbody.addEventListener('pointerdown', (ev)=>{
-    if (!EDIT_MODE) return;
+    if (!EDIT_MODE || READ_ONLY) return;
 
     const blockEl = ev.target?.closest?.('.block[data-block-id]');
     if (!blockEl) return;
@@ -1063,7 +1043,7 @@ function renderVivo(){
         ${meta ? `<div class="meta">${esc(meta)}</div>` : `<div class="meta">&nbsp;</div>`}
       `;
 
-      if (EDIT_MODE && b){
+      if (!READ_ONLY && EDIT_MODE && b){
         div.style.cursor = 'pointer';
         div.addEventListener('click', ()=>{
           openModal(
@@ -1127,7 +1107,7 @@ function renderSalas(){
           </div>
           <div class="listRight">
             <div class="pillTime">${esc(time)}</div>
-            ${EDIT_MODE ? `<button class="btnMini" data-act="edit" data-id="${esc(b.id)}">Editar</button>` : ``}
+            ${(!READ_ONLY && EDIT_MODE) ? `<button class="btnMini" data-act="edit" data-id="${esc(b.id)}">Editar</button>` : ``}
           </div>
         </div>
       `;
@@ -1143,7 +1123,7 @@ function renderSalas(){
 
   $salasWrap.innerHTML = html;
 
-  if (EDIT_MODE){
+  if (!READ_ONLY && EDIT_MODE){
     $salasWrap.querySelectorAll('[data-act="edit"]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.id;
@@ -1203,7 +1183,7 @@ function renderDocentes(filterText = ''){
           </div>
           <div class="listRight">
             <div class="pillRoom">${esc(room)}</div>
-            ${EDIT_MODE ? `<button class="btnMini" data-act="edit" data-id="${esc(b.id)}">Editar</button>` : ``}
+            ${(!READ_ONLY && EDIT_MODE) ? `<button class="btnMini" data-act="edit" data-id="${esc(b.id)}">Editar</button>` : ``}
           </div>
         </div>
       `;
@@ -1220,7 +1200,7 @@ function renderDocentes(filterText = ''){
 
   $docentesWrap.innerHTML = html;
 
-  if (EDIT_MODE){
+  if (!READ_ONLY && EDIT_MODE){
     $docentesWrap.querySelectorAll('[data-act="edit"]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.id;
@@ -1276,7 +1256,7 @@ function renderBuscar(){
         </div>
         <div class="listRight">
           <div class="pillRoom">${esc(room)}</div>
-          ${EDIT_MODE ? `<button class="btnMini" data-act="edit" data-id="${esc(b.id)}">Editar</button>` : ``}
+          ${(!READ_ONLY && EDIT_MODE) ? `<button class="btnMini" data-act="edit" data-id="${esc(b.id)}">Editar</button>` : ``}
         </div>
       </div>
     `;
@@ -1289,7 +1269,7 @@ function renderBuscar(){
     contentHtml: items
   });
 
-  if (EDIT_MODE){
+  if (!READ_ONLY && EDIT_MODE){
     $buscarWrap.querySelectorAll('[data-act="edit"]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.id;
@@ -1403,7 +1383,6 @@ $btnKpisRefresh?.addEventListener('click', renderKPIs);
    Firestore
 ============================================================================= */
 function sanitizeBlock(raw){
-  // Firestore a veces devuelve números como strings si alguien metió basura. Aquí lo dejamos decente.
   const startMin = Number(raw.startMin);
   const endMin = Number(raw.endMin);
   const salonIndex = Number(raw.salonIndex);
@@ -1422,6 +1401,17 @@ function sanitizeBlock(raw){
   };
 }
 
+function humanFirestoreError(err){
+  const code = err?.code || '';
+  if (code === 'permission-denied'){
+    return 'Permiso denegado (permission-denied). Tus rules están bloqueando lectura/edición.';
+  }
+  if (code === 'unauthenticated'){
+    return 'No autenticado (unauthenticated). Auth anónimo no quedó listo.';
+  }
+  return err?.message || 'Error leyendo Firestore';
+}
+
 function listenHoja(hoja){
   if (unsub) { try{ unsub(); }catch(e){} unsub = null; }
 
@@ -1437,18 +1427,22 @@ function listenHoja(hoja){
 
   unsub = onSnapshot(qy, (snap) => {
     const fromCache = snap.metadata?.fromCache;
-    setNet(true, fromCache ? 'conectado (cache)' : 'conectado (server)');
+
+    if (READ_ONLY){
+      setNet(true, fromCache ? 'solo lectura (cache)' : 'solo lectura (server)');
+    }else{
+      setNet(true, fromCache ? 'conectado (cache)' : 'conectado (server)');
+    }
 
     blocks = snap.docs.map(d => sanitizeBlock({ id:d.id, ...d.data() }));
     reindexBlocks();
 
     setLoad(true, 'Listo', fromCache ? 'Mostrando datos cacheados' : 'Sincronizado');
-
     refreshAllViews();
   }, (err) => {
     console.error(err);
     setNet(false, 'error');
-    setLoad(false, 'Error', 'No se pudo leer Firestore');
+    setLoad(false, 'Error', humanFirestoreError(err));
   });
 }
 
@@ -1456,6 +1450,18 @@ function listenHoja(hoja){
    Actions
 ============================================================================= */
 $toggleEdit?.addEventListener('change', () => {
+  // Si no hay auth, no dejamos activar edición
+  if ($toggleEdit.checked && READ_ONLY){
+    $toggleEdit.checked = false;
+    EDIT_MODE = false;
+    showEditBadge(false);
+    showDragBadge(false);
+    cancelDrag();
+    alert('Edición bloqueada: no hay sesión (Auth anónimo). La tabla sí carga, pero no se puede editar.');
+    refreshAllViews();
+    return;
+  }
+
   EDIT_MODE = $toggleEdit.checked;
   showEditBadge(EDIT_MODE);
   showDragBadge(false);
@@ -1485,7 +1491,6 @@ $modalBack?.addEventListener('click', (e) => {
   if (e.target === $modalBack) closeModal();
 });
 
-// atajos: Esc cierra modal, Ctrl+S guarda
 document.addEventListener('keydown', (e) => {
   if ($modalBack?.hidden === false){
     if (e.key === 'Escape'){
@@ -1501,8 +1506,9 @@ document.addEventListener('keydown', (e) => {
 
 $btnSave && ($btnSave.onclick = async () => {
   if (!modalCtx) return;
+  if (READ_ONLY) return;
 
-  const endMin = Number($mEnd.value);
+  const endMin = Number($mEnd?.value);
   const salonIndex = modalCtx.salonIndex;
   const startMin = modalCtx.startMin;
 
@@ -1558,6 +1564,7 @@ $btnSave && ($btnSave.onclick = async () => {
 
 $btnDelete && ($btnDelete.onclick = async () => {
   if (!modalCtx || modalCtx.mode !== 'edit') return;
+  if (READ_ONLY) return;
   if (!confirm('¿Eliminar este bloque?')) return;
 
   try{
@@ -1578,14 +1585,13 @@ function tick(){
   const mm = pad2(d.getMinutes());
   const ss = pad2(d.getSeconds());
   if ($clock) $clock.textContent = `${hh}:${mm}:${ss}`;
-
   if (activeTab() === 'vivo') renderVivo();
 }
 setInterval(tick, 1000);
 tick();
 
 /* =============================================================================
-   Init
+   Init (GitHub-safe)
 ============================================================================= */
 buildHeader();
 ensureMiniCardStylesOnce();
@@ -1595,22 +1601,63 @@ setNet(false, 'conectando');
 setLoad(false, 'Cargando…', 'Inicializando…');
 showEditBadge(!!$toggleEdit?.checked);
 
+// Helper: timeout para no quedarnos colgados esperando auth
+function withTimeout(promise, ms, label='timeout'){
+  let t;
+  const timeout = new Promise((_, rej)=>{
+    t = setTimeout(()=>rej(new Error(label)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(()=>clearTimeout(t));
+}
+
 (async function init(){
+  currentHoja = $selHoja?.value || 'Lunes';
+
+  // 1) Arrancamos escuchando Firestore IGUAL (así auth no bloquee la tabla)
+  //    Si las rules requieren auth, aquí se verá permission-denied y listo.
+  listenHoja(currentHoja);
+  startVivoAutoRefresh();
+
+  // 2) Intento de Auth anónimo para habilitar edición (sin frenar render)
   try{
-    // Ajuste: solo anónimo, sin historias raras de login por correo.
-    await ensureAnon();
+    // si tarda mucho, no bloquea todo
+    await withTimeout(ensureAnon(), 4500, 'Auth tardó demasiado');
+    AUTH_OK = true;
+    READ_ONLY = false;
+    LAST_ERR = null;
 
     setNet(true, 'conectado');
+    setLoad(true, 'Listo', 'Sesión lista (edición disponible)');
+
+    // Si el usuario tenía el toggle prendido, lo respetamos
     EDIT_MODE = !!$toggleEdit?.checked;
     showEditBadge(EDIT_MODE);
 
-    currentHoja = $selHoja?.value || 'Lunes';
-    listenHoja(currentHoja);
-    startVivoAutoRefresh();
   }catch(e){
-    console.error(e);
-    setNet(false, 'error');
-    setLoad(false, 'Error', 'No se pudo autenticar (anónimo)');
-    alert(e?.message || 'Error de autenticación');
+    // Auth falló: modo lectura
+    AUTH_OK = false;
+    READ_ONLY = true;
+    LAST_ERR = e;
+
+    // Si estaba en edit, lo apagamos
+    if ($toggleEdit){
+      $toggleEdit.checked = false;
+    }
+    EDIT_MODE = false;
+    showEditBadge(false);
+    showDragBadge(false);
+    cancelDrag();
+
+    // Importante: NO matamos la tabla, solo avisamos
+    setNet(true, 'solo lectura');
+    setLoad(true, 'Listo', 'Modo solo lectura (Auth anónimo no quedó listo)');
+
+    console.warn('Auth anon no disponible. Continuando en solo lectura.', e);
+    // No alert aquí porque en GitHub a veces el navegador se pone slow y sería spam.
+    // Si de verdad necesitas el alert, lo activas:
+    // alert(e?.message || 'Error de autenticación');
   }
+
+  // 3) Render por si hubo cambios de flags
+  refreshAllViews();
 })();
