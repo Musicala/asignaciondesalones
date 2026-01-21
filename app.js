@@ -21,6 +21,7 @@ import {
   ✅ FIX: hover dropTarget sin parpadeo (track last cell)
   ✅ FIX: badge “Mover/Copiar” NO se queda pegado (pointercancel/blur/visibilitychange)
   ✅ GitHub Pages FIX: la tabla NO depende de que Auth anónimo funcione (fallback read-only)
+  ✅ NUEVO: Auto-selección del día real al abrir (y respeta elección solo dentro del mismo día)
 ============================================================================= */
 
 /* ===== Config (window.APP_CONFIG) ===== */
@@ -86,6 +87,47 @@ function slotStartForMinutes(mins){
 
 const SLOTS = [];
 for (let m=START_MIN; m<END_MIN; m+=STEP_MIN) SLOTS.push(m);
+
+/* ===== LocalStorage safe + Día real ===== */
+const LS_KEYS = {
+  lastHoja: 'horario_lastHoja',
+  lastDate: 'horario_lastHojaDate'
+};
+
+function safeGetLS(key){
+  try{ return localStorage.getItem(key); }catch(_){ return null; }
+}
+function safeSetLS(key,val){
+  try{ localStorage.setItem(key, val); }catch(_){}
+}
+
+function todayISO(){
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+
+function getTodayHoja(){
+  // JS: 0=Domingo ... 6=Sábado
+  const map = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+  const d = new Date();
+  return map[d.getDay()] || 'Lunes';
+}
+
+function pickInitialHoja(){
+  // Regla: abrir por día real. Si el usuario cambió HOY, respetarlo solo HOY.
+  const today = getTodayHoja();
+  const iso = todayISO();
+
+  const savedDay = safeGetLS(LS_KEYS.lastHoja);
+  const savedDate = safeGetLS(LS_KEYS.lastDate);
+
+  if (savedDay && savedDate === iso && CFG.days.includes(savedDay)) return savedDay;
+  if (CFG.days.includes(today)) return today;
+  return 'Lunes';
+}
 
 /* ===== DOM ===== */
 const qs = (s,root=document)=>root.querySelector(s);
@@ -1471,6 +1513,11 @@ $toggleEdit?.addEventListener('change', () => {
 
 $selHoja?.addEventListener('change', () => {
   currentHoja = $selHoja.value;
+
+  // Guardar elección SOLO dentro del mismo día
+  safeSetLS(LS_KEYS.lastHoja, currentHoja);
+  safeSetLS(LS_KEYS.lastDate, todayISO());
+
   vivoOffset = 0;
   cancelDrag();
   listenHoja(currentHoja);
@@ -1611,7 +1658,9 @@ function withTimeout(promise, ms, label='timeout'){
 }
 
 (async function init(){
-  currentHoja = $selHoja?.value || 'Lunes';
+  // ✅ Auto-selección del día real
+  currentHoja = pickInitialHoja();
+  if ($selHoja) $selHoja.value = currentHoja;
 
   // 1) Arrancamos escuchando Firestore IGUAL (así auth no bloquee la tabla)
   //    Si las rules requieren auth, aquí se verá permission-denied y listo.
@@ -1653,9 +1702,6 @@ function withTimeout(promise, ms, label='timeout'){
     setLoad(true, 'Listo', 'Modo solo lectura (Auth anónimo no quedó listo)');
 
     console.warn('Auth anon no disponible. Continuando en solo lectura.', e);
-    // No alert aquí porque en GitHub a veces el navegador se pone slow y sería spam.
-    // Si de verdad necesitas el alert, lo activas:
-    // alert(e?.message || 'Error de autenticación');
   }
 
   // 3) Render por si hubo cambios de flags
