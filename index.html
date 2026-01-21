@@ -385,7 +385,10 @@
 
           <div class="field">
             <span>Docente</span>
-            <input id="mDocente" type="text" placeholder="Ej: Angie" autocomplete="off" />
+            <!-- ✅ datalist para docentes (lo llena app.js) -->
+            <input id="mDocente" list="docentesList" type="text" placeholder="Ej: Angie" autocomplete="off" />
+            <datalist id="docentesList"></datalist>
+
             <div style="margin-top:6px;color:var(--muted);font-weight:800;font-size:12px;">
               Tip: el color sale automático por docente 🎨
             </div>
@@ -393,7 +396,12 @@
 
           <div class="field">
             <span>Modalidad</span>
-            <input id="mModalidad" type="text" placeholder="Sede / Virtual" autocomplete="off" />
+            <!-- ✅ datalist para modalidad -->
+            <input id="mModalidad" list="modalidadList" type="text" placeholder="Sede / Virtual / Hogar" autocomplete="off" />
+            <datalist id="modalidadList">
+              <option value="Sede"></option>
+              <option value="Virtual"></option>
+            </datalist>
           </div>
 
           <div class="field">
@@ -486,6 +494,3 @@
   </script>
 </body>
 </html>
-
-
-
