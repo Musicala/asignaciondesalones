@@ -1,5 +1,8 @@
+// app.js
 import { ensureAnon } from "./auth.js";
 import { db } from "./firebase.js";
+import { setupModalPro } from "./modalPro.js";
+
 import {
   collection, query, where, orderBy, onSnapshot,
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp
@@ -9,7 +12,7 @@ import {
   Horario Musicala · app.js (Firebase) — vPRO MAX+++ (Day Auto + Sticky Rooms + Lists)
   -----------------------------------------------------------------------------
   ✅ Tabla 30 min x 10 salones (rowSpan)
-  ✅ Modo edición + Modal PRO
+  ✅ Modo edición + Modal PRO (ahora en modalPro.js)
   ✅ Auto-text (respeta si editas manual)
   ✅ Color por docente (paleta)
   ✅ Drag&drop mover/copiar (Alt/Ctrl/Meta) con validación de solapes
@@ -18,9 +21,7 @@ import {
   ✅ Estado red (cache vs server)
   ✅ GitHub Pages: fallback read-only si Auth anon falla
   ✅ Auto-selección del día real (y respeta elección solo “hoy”)
-  ✅ NUEVO: Columna “salón” sticky para no perder visibilidad al scrollear
-  ✅ NUEVO: Docente & Modalidad como listas (select)
-  ✅ NUEVO: Admin rápido de Docentes (nombre + color) desde el modal (persistencia LS)
+  ✅ Columna “salón” sticky para no perder visibilidad al scrollear
 ============================================================================= */
 
 /* =============================================================================
@@ -46,7 +47,7 @@ const CFG = (() => {
       "Salón 10:\nMultipropósito"
     ],
     docentesPalette: c.docentesPalette || {},
-    modalidades: c.modalidades || ["Sede","Virtual"] // por defecto
+    modalidades: c.modalidades || ["Sede","Virtual"]
   };
 })();
 
@@ -189,6 +190,7 @@ const $statusMsg = qs('#statusMsg');
 const $thead = qs('#thead');
 const $tbody = qs('#tbody');
 
+// Modal DOM (los maneja modalPro.js)
 const $modalBack = qs('#modalBack');
 const $btnCloseModal = qs('#btnCloseModal');
 const $btnCancel = qs('#btnCancel');
@@ -205,7 +207,7 @@ const $mNote = qs('#mNote');
 const $modalTitle = qs('#modalTitle');
 
 const $mGrupo = qs('#mGrupo');
-const $mDocente = qs('#mDocente');     // en tu index es input (lo vamos a convertir a select sin tocar HTML)
+const $mDocente = qs('#mDocente');     // input en tu index (modalPro lo convierte a select)
 const $mModalidad = qs('#mModalidad'); // idem
 
 // Tabs views
@@ -241,7 +243,7 @@ const $vivoPrevWrap = qs('#vivoPrevWrap');
 const $vivoNowWrap = qs('#vivoNowWrap');
 const $vivoNextWrap = qs('#vivoNextWrap');
 
-// Badges opcionales (si existen en tu styles/index)
+// Badges opcionales
 const $editBadge = qs('#editBadge');
 const $dragBadge = qs('#dragBadge');
 const $dragBadgeText = qs('#dragBadgeText');
@@ -256,9 +258,6 @@ let blocks = [];
 let blocksById = new Map();
 let unsub = null;
 
-let modalCtx = null;
-let modalManualText = false;
-
 // En vivo
 let vivoOffset = 0;
 let vivoTimer = null;
@@ -271,6 +270,9 @@ let LAST_ERR = null;
 // Pointer Drag state
 let dragState = null;
 const DRAG_THRESHOLD_PX = 7;
+
+// Modal API (modalPro.js)
+let modalAPI = null;
 
 /* =============================================================================
    UI helpers
@@ -345,14 +347,12 @@ function colorForDocente(docente, text){
 
 /* =============================================================================
    Sticky column: “salón” siempre visible al scrollear horizontal/vertical
-   (inyectamos CSS para no tocar styles.css)
 ============================================================================= */
 function ensureStickyRoomsCSS(){
   if (qs('#__stickyRoomsCSS')) return;
   const st = document.createElement('style');
   st.id = '__stickyRoomsCSS';
   st.textContent = `
-    /* Columna Hora sticky (th de la izquierda) */
     table.grid thead th:first-child,
     table.grid tbody th:first-child{
       position: sticky;
@@ -361,7 +361,6 @@ function ensureStickyRoomsCSS(){
       background: rgba(255,255,255,.94);
       backdrop-filter: blur(8px);
     }
-    /* Header sticky arriba (si tu styles ya lo hace, esto ayuda; si no, no molesta) */
     table.grid thead th{
       position: sticky;
       top: 0;
@@ -369,17 +368,15 @@ function ensureStickyRoomsCSS(){
       background: rgba(255,255,255,.94);
       backdrop-filter: blur(8px);
     }
-    /* Columna “Salón” sticky (primer th del thead después de Hora) */
     table.grid thead th:nth-child(2),
     table.grid tbody td:nth-child(2){
       position: sticky;
-      left: 86px; /* ancho aprox de columna hora; si tu CSS cambia, ajústalo aquí */
+      left: 86px;
       z-index: 7;
       background: rgba(255,255,255,.92);
       backdrop-filter: blur(8px);
       box-shadow: 10px 0 24px rgba(15,23,42,.08);
     }
-    /* Ajuste responsivo si la hora queda más angosta */
     @media (max-width: 560px){
       table.grid thead th:nth-child(2),
       table.grid tbody td:nth-child(2){
@@ -389,378 +386,6 @@ function ensureStickyRoomsCSS(){
   `;
   document.head.appendChild(st);
 }
-
-/* =============================================================================
-   Modal upgrades: convertir inputs a selects (docente/modalidad) + admin de listas
-============================================================================= */
-let $mDocenteSelect = null;
-let $mModalidadSelect = null;
-
-function replaceInputWithSelect(inputEl, id){
-  if (!inputEl) return null;
-  if (inputEl.tagName === 'SELECT') return inputEl;
-
-  const sel = document.createElement('select');
-  sel.id = id;
-  sel.className = inputEl.className || '';
-  sel.style.cssText = inputEl.style?.cssText || '';
-  sel.setAttribute('aria-label', inputEl.getAttribute('aria-label') || '');
-
-  // Copiar placeholder como primera opción vacía
-  const ph = inputEl.getAttribute('placeholder') || '';
-  const opt0 = document.createElement('option');
-  opt0.value = '';
-  opt0.textContent = ph ? ph : '—';
-  sel.appendChild(opt0);
-
-  inputEl.replaceWith(sel);
-  return sel;
-}
-
-function fillSelectOptions(sel, items){
-  if (!sel) return;
-  const keep0 = sel.querySelector('option[value=""]');
-  sel.innerHTML = '';
-  if (keep0){
-    sel.appendChild(keep0);
-  }else{
-    const opt0 = document.createElement('option');
-    opt0.value = '';
-    opt0.textContent = '—';
-    sel.appendChild(opt0);
-  }
-
-  items.forEach(v=>{
-    const opt = document.createElement('option');
-    opt.value = v;
-    opt.textContent = v;
-    sel.appendChild(opt);
-  });
-}
-
-function docentesSorted(){
-  const keys = Object.keys(DOCENTES_PALETTE || {});
-  return keys.sort((a,b)=>a.localeCompare(b,'es'));
-}
-
-function ensureModalListUI(){
-  // Inyecta un panel pequeño dentro del modal para administrar docentes y modalidades.
-  // Solo una vez.
-  if (qs('#__listsPanel')) return;
-
-  const modalBody = qs('.modalBody');
-  if (!modalBody) return;
-
-  const panel = document.createElement('div');
-  panel.id = '__listsPanel';
-  panel.style.marginTop = '12px';
-  panel.style.paddingTop = '12px';
-  panel.style.borderTop = '1px solid var(--line)';
-  panel.innerHTML = `
-    <details style="border:1px solid var(--line);border-radius:16px;padding:10px 12px;background:rgba(255,255,255,.75);box-shadow:var(--shadow2)">
-      <summary style="cursor:pointer;font-weight:1000">Listas (Docentes / Modalidades)</summary>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;">
-        <div>
-          <div style="font-weight:1000;margin-bottom:6px;">Docentes</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <input id="__docName" class="select" style="border-radius:12px;flex:1;min-width:160px" placeholder="Nombre docente" />
-            <input id="__docColor" type="color" value="#C7D2FE" style="height:40px;width:56px;border:1px solid var(--line);border-radius:12px;padding:4px;background:#fff" />
-            <button id="__docAdd" class="btnTop" type="button">Agregar</button>
-          </div>
-          <div id="__docList" style="margin-top:10px;"></div>
-          <div style="color:var(--muted);font-weight:800;font-size:12px;margin-top:8px;">
-            Esto se guarda en el navegador (localStorage). Si abres en otro computador, toca volver a cargar la lista.
-          </div>
-        </div>
-
-        <div>
-          <div style="font-weight:1000;margin-bottom:6px;">Modalidades</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <input id="__modName" class="select" style="border-radius:12px;flex:1;min-width:160px" placeholder="Ej: Sede" />
-            <button id="__modAdd" class="btnTop" type="button">Agregar</button>
-          </div>
-          <div id="__modList" style="margin-top:10px;"></div>
-          <div style="color:var(--muted);font-weight:800;font-size:12px;margin-top:8px;">
-            Recomendado: Sede / Virtual (y ya).
-          </div>
-        </div>
-      </div>
-    </details>
-  `;
-
-  modalBody.appendChild(panel);
-
-  // Bind
-  const $docName = qs('#__docName');
-  const $docColor = qs('#__docColor');
-  const $docAdd = qs('#__docAdd');
-  const $docList = qs('#__docList');
-
-  const $modName = qs('#__modName');
-  const $modAdd = qs('#__modAdd');
-  const $modList = qs('#__modList');
-
-  function renderDocList(){
-    const keys = docentesSorted();
-    if (!keys.length){
-      $docList.innerHTML = `<div style="color:var(--muted);font-weight:900;">Sin docentes.</div>`;
-      return;
-    }
-    $docList.innerHTML = keys.map(name=>{
-      const col = DOCENTES_PALETTE[name] || '#C7D2FE';
-      return `
-        <div class="listItem" style="align-items:center;">
-          <div class="listLeft" style="display:flex;gap:10px;align-items:center;min-width:0;">
-            <span style="width:18px;height:18px;border-radius:6px;background:${esc(col)};border:1px solid rgba(0,0,0,.12);flex:0 0 auto;"></span>
-            <div class="listMain" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(name)}</div>
-          </div>
-          <div class="listRight" style="flex-direction:row;align-items:center;">
-            <input data-act="docColor" data-name="${esc(name)}" type="color" value="${esc(col)}"
-              style="height:36px;width:50px;border:1px solid var(--line);border-radius:12px;padding:3px;background:#fff" />
-            <button class="btnMini" data-act="docDel" data-name="${esc(name)}" type="button">Quitar</button>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    // bind actions
-    $docList.querySelectorAll('[data-act="docDel"]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const name = btn.dataset.name;
-        if (!name) return;
-        delete DOCENTES_PALETTE[name];
-        saveDocentesPalette(DOCENTES_PALETTE);
-        // refrescar selects
-        fillSelectOptions($mDocenteSelect, docentesSorted());
-        renderDocList();
-      });
-    });
-    $docList.querySelectorAll('[data-act="docColor"]').forEach(inp=>{
-      inp.addEventListener('input', ()=>{
-        const name = inp.dataset.name;
-        if (!name) return;
-        DOCENTES_PALETTE[name] = inp.value;
-        saveDocentesPalette(DOCENTES_PALETTE);
-        fillSelectOptions($mDocenteSelect, docentesSorted());
-        // No re-render total para no perder foco: ok
-      });
-    });
-  }
-
-  function renderModList(){
-    if (!MODALIDADES.length){
-      $modList.innerHTML = `<div style="color:var(--muted);font-weight:900;">Sin modalidades.</div>`;
-      return;
-    }
-    $modList.innerHTML = MODALIDADES.map((m, idx)=>{
-      return `
-        <div class="listItem" style="align-items:center;">
-          <div class="listLeft">
-            <div class="listMain">${esc(m)}</div>
-          </div>
-          <div class="listRight" style="flex-direction:row;align-items:center;">
-            <button class="btnMini" data-act="modUp" data-idx="${idx}" type="button">↑</button>
-            <button class="btnMini" data-act="modDown" data-idx="${idx}" type="button">↓</button>
-            <button class="btnMini" data-act="modDel" data-idx="${idx}" type="button">Quitar</button>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    $modList.querySelectorAll('[data-act="modDel"]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const i = Number(btn.dataset.idx);
-        if (!Number.isFinite(i)) return;
-        MODALIDADES.splice(i,1);
-        MODALIDADES = MODALIDADES.map(x=>String(x).trim()).filter(Boolean);
-        if (!MODALIDADES.length) MODALIDADES = ["Sede","Virtual"];
-        saveModalidades(MODALIDADES);
-        fillSelectOptions($mModalidadSelect, MODALIDADES);
-        renderModList();
-      });
-    });
-    $modList.querySelectorAll('[data-act="modUp"]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const i = Number(btn.dataset.idx);
-        if (i>0){
-          const tmp = MODALIDADES[i-1];
-          MODALIDADES[i-1] = MODALIDADES[i];
-          MODALIDADES[i] = tmp;
-          saveModalidades(MODALIDADES);
-          fillSelectOptions($mModalidadSelect, MODALIDADES);
-          renderModList();
-        }
-      });
-    });
-    $modList.querySelectorAll('[data-act="modDown"]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const i = Number(btn.dataset.idx);
-        if (i < MODALIDADES.length-1){
-          const tmp = MODALIDADES[i+1];
-          MODALIDADES[i+1] = MODALIDADES[i];
-          MODALIDADES[i] = tmp;
-          saveModalidades(MODALIDADES);
-          fillSelectOptions($mModalidadSelect, MODALIDADES);
-          renderModList();
-        }
-      });
-    });
-  }
-
-  $docAdd?.addEventListener('click', ()=>{
-    const name = ($docName?.value || '').trim();
-    const col  = ($docColor?.value || '#C7D2FE').trim();
-    if (!name) return;
-    DOCENTES_PALETTE[name] = col;
-    saveDocentesPalette(DOCENTES_PALETTE);
-    if ($docName) $docName.value = '';
-    fillSelectOptions($mDocenteSelect, docentesSorted());
-    renderDocList();
-  });
-
-  $modAdd?.addEventListener('click', ()=>{
-    const name = ($modName?.value || '').trim();
-    if (!name) return;
-    if (!MODALIDADES.includes(name)) MODALIDADES.push(name);
-    MODALIDADES = MODALIDADES.map(x=>String(x).trim()).filter(Boolean);
-    saveModalidades(MODALIDADES);
-    if ($modName) $modName.value = '';
-    fillSelectOptions($mModalidadSelect, MODALIDADES);
-    renderModList();
-  });
-
-  renderDocList();
-  renderModList();
-}
-
-function ensureModalSelects(){
-  // Convertir inputs a selects sin cambiar HTML manualmente
-  $mDocenteSelect = replaceInputWithSelect($mDocente, 'mDocente');
-  $mModalidadSelect = replaceInputWithSelect($mModalidad, 'mModalidad');
-
-  fillSelectOptions($mDocenteSelect, docentesSorted());
-  fillSelectOptions($mModalidadSelect, MODALIDADES);
-
-  // Si alguien quiere escribir algo "nuevo": dejamos editable con opción "Otro…"
-  // (pero sin custom select fancy). La vía oficial para agregar es el panel.
-}
-
-/* =============================================================================
-   Modal
-============================================================================= */
-function openModal(ctx, existing=null){
-  if (READ_ONLY){
-    alert('Estás en modo solo lectura (sin sesión). Para editar necesitas Auth anónimo habilitado.');
-    return;
-  }
-
-  modalCtx = ctx;
-  modalManualText = false;
-
-  ensureModalSelects();
-  ensureModalListUI();
-
-  const salonName = salonLabel(ctx.salonIndex);
-  if ($mHoja)  $mHoja.value = ctx.hoja;
-  if ($mSalon) $mSalon.value = salonName;
-  if ($mStart) $mStart.value = toHHMM(ctx.startMin);
-
-  if ($mEnd){
-    $mEnd.innerHTML = '';
-    for (let m = ctx.startMin + STEP_MIN; m <= END_MIN; m += STEP_MIN){
-      const opt = document.createElement('option');
-      opt.value = String(m);
-      opt.textContent = toHHMM(m);
-      $mEnd.appendChild(opt);
-    }
-  }
-
-  const docenteSel = $mDocenteSelect;
-  const modalidadSel = $mModalidadSelect;
-
-  if (existing){
-    if ($modalTitle) $modalTitle.textContent = 'Editar bloque';
-    if ($mText) $mText.value = existing.text || '';
-    if ($mNote) $mNote.value = existing.note || '';
-    if ($mGrupo) $mGrupo.value = existing.grupo || '';
-
-    if (docenteSel){
-      fillSelectOptions(docenteSel, docentesSorted());
-      docenteSel.value = existing.docente || '';
-    }
-    if (modalidadSel){
-      fillSelectOptions(modalidadSel, MODALIDADES);
-      modalidadSel.value = existing.modalidad || '';
-    }
-
-    if ($mEnd) $mEnd.value = String(existing.endMin);
-    if ($btnDelete) $btnDelete.hidden = false;
-  }else{
-    if ($modalTitle) $modalTitle.textContent = 'Crear bloque';
-    if ($mNote) $mNote.value = '';
-    if ($mGrupo) $mGrupo.value = '';
-    if (docenteSel){
-      fillSelectOptions(docenteSel, docentesSorted());
-      docenteSel.value = '';
-    }
-    if (modalidadSel){
-      fillSelectOptions(modalidadSel, MODALIDADES);
-      modalidadSel.value = '';
-    }
-    if ($mText) $mText.value = '';
-    if ($mEnd) $mEnd.value = String(ctx.startMin + STEP_MIN);
-    if ($btnDelete) $btnDelete.hidden = true;
-  }
-
-  syncModalTextFromProFields();
-
-  if ($modalBack) $modalBack.hidden = false;
-  setTimeout(()=>{
-    if ($mGrupo) $mGrupo.focus();
-    else $mText?.focus();
-  }, 0);
-}
-
-function closeModal(){
-  if ($modalBack) $modalBack.hidden = true;
-  modalCtx = null;
-  modalManualText = false;
-}
-
-function getModalProPayload(){
-  const grupo = ($mGrupo?.value || '').trim();
-  const docente = ($mDocenteSelect?.value || '').trim();
-  const modalidad = ($mModalidadSelect?.value || '').trim();
-  const note = ($mNote?.value || '').trim();
-  const text = ($mText?.value || '').trim();
-  return { grupo, docente, modalidad, note, text };
-}
-
-function syncModalTextFromProFields(){
-  if (!$mGrupo || !$mText || !$mNote) return;
-  if (modalManualText) return;
-
-  const grupo = ($mGrupo.value || '').trim();
-  const docente = ($mDocenteSelect?.value || '').trim();
-  const modalidad = ($mModalidadSelect?.value || '').trim();
-  const note = ($mNote.value || '').trim();
-
-  $mText.value = buildTextFromFields({ grupo, docente, modalidad, note });
-}
-
-/* Modal input listeners */
-if ($mText){
-  $mText.addEventListener('input', () => { modalManualText = true; });
-}
-[$mGrupo, $mNote].filter(Boolean).forEach(el=>{
-  el.addEventListener('input', ()=> syncModalTextFromProFields());
-});
-document.addEventListener('change', (e)=>{
-  if (e.target && (e.target.id === 'mDocente' || e.target.id === 'mModalidad')){
-    syncModalTextFromProFields();
-  }
-});
 
 /* =============================================================================
    Table build
@@ -1061,7 +686,7 @@ function renderGrid(){
 }
 
 /* =============================================================================
-   POINTER: click vs drag (delegation) + hover limpio
+   POINTER: click vs drag (delegation)
 ============================================================================= */
 function bindDragSafetyListeners(){
   document.addEventListener('pointermove', onPointerMove, { passive:false });
@@ -1173,7 +798,7 @@ function onPointerUp(ev){
   }catch(_){}
 
   if (!wasDrag){
-    openModal(
+    modalAPI?.openModal?.(
       { mode:'edit', id:block.id, hoja:currentHoja, salonIndex:block.salonIndex, startMin:block.startMin },
       block
     );
@@ -1287,7 +912,7 @@ function onDragHoverXY(x, y){
   const td = getCellUnderXY(x, y);
 
   if (td && dragState.lastHoverTd === td){
-    // misma celda, no limpies para no parpadear
+    // no-op
   } else {
     clearDropTargets(false);
   }
@@ -1386,7 +1011,7 @@ function bindGridDelegationOnce(){
     const slotMin = Number(td.dataset.slot);
     const salonIndex = Number(td.dataset.salon);
 
-    openModal({ mode:'new', hoja:currentHoja, salonIndex, startMin:slotMin }, null);
+    modalAPI?.openModal?.({ mode:'new', hoja:currentHoja, salonIndex, startMin:slotMin }, null);
   });
 
   $tbody.addEventListener('pointerdown', (ev)=>{
@@ -1479,7 +1104,7 @@ function renderVivo(){
       if (!READ_ONLY && EDIT_MODE && b){
         div.style.cursor = 'pointer';
         div.addEventListener('click', ()=>{
-          openModal(
+          modalAPI?.openModal?.(
             { mode:'edit', id:b.id, hoja:currentHoja, salonIndex:b.salonIndex, startMin:b.startMin },
             b
           );
@@ -1564,7 +1189,7 @@ function renderSalas(){
         const id = btn.dataset.id;
         const b = blocksById.get(id);
         if (!b) return;
-        openModal({ mode:'edit', id:b.id, hoja:currentHoja, salonIndex:b.salonIndex, startMin:b.startMin }, b);
+        modalAPI?.openModal?.({ mode:'edit', id:b.id, hoja:currentHoja, salonIndex:b.salonIndex, startMin:b.startMin }, b);
       });
     });
   }
@@ -1581,7 +1206,6 @@ function collectDocentes(){
     const d = normalizeName(b.docente) || normalizeName(parseDocenteFromText(b.text||''));
     if (d) set.add(d);
   }
-  // incluir también los del palette para que aparezcan aunque no estén en bloques aún
   Object.keys(DOCENTES_PALETTE || {}).forEach(d=>set.add(d));
   return Array.from(set).sort((a,b)=>a.localeCompare(b,'es'));
 }
@@ -1645,7 +1269,7 @@ function renderDocentes(filterText = ''){
         const id = btn.dataset.id;
         const b = blocksById.get(id);
         if (!b) return;
-        openModal({ mode:'edit', id:b.id, hoja:currentHoja, salonIndex:b.salonIndex, startMin:b.startMin }, b);
+        modalAPI?.openModal?.({ mode:'edit', id:b.id, hoja:currentHoja, salonIndex:b.salonIndex, startMin:b.startMin }, b);
       });
     });
   }
@@ -1716,7 +1340,7 @@ function renderBuscar(){
         const id = btn.dataset.id;
         const b = blocksById.get(id);
         if (!b) return;
-        openModal({ mode:'edit', id:b.id, hoja:currentHoja, salonIndex:b.salonIndex, startMin:b.startMin }, b);
+        modalAPI?.openModal?.({ mode:'edit', id:b.id, hoja:currentHoja, salonIndex:b.salonIndex, startMin:b.startMin }, b);
       });
     });
   }
@@ -1929,98 +1553,123 @@ $btnFull?.addEventListener('click', async () => {
   }catch(e){}
 });
 
-/* ===== Modal events ===== */
-$btnCloseModal && ($btnCloseModal.onclick = closeModal);
-$btnCancel && ($btnCancel.onclick = closeModal);
+/* =============================================================================
+   ModalPro: wiring (app.js guarda/borrar, modalPro maneja UI)
+============================================================================= */
+function initModalPro(){
+  modalAPI = setupModalPro({
+    // modal shell
+    $modalBack,
+    $btnCloseModal,
+    $btnCancel,
+    $btnSave,
+    $btnDelete,
+    $modalTitle,
 
-$modalBack?.addEventListener('click', (e) => {
-  if (e.target === $modalBack) closeModal();
-});
+    // fields
+    $mHoja,
+    $mSalon,
+    $mStart,
+    $mEnd,
+    $mText,
+    $mNote,
+    $mGrupo,
+    $mDocente,
+    $mModalidad,
 
-document.addEventListener('keydown', (e) => {
-  if ($modalBack?.hidden === false){
-    if (e.key === 'Escape'){
-      e.preventDefault();
-      closeModal();
+    // config
+    STEP_MIN,
+    END_MIN,
+
+    // state getters
+    getREAD_ONLY: () => READ_ONLY,
+    getCurrentHoja: () => currentHoja,
+
+    // helpers
+    salonLabel,
+    toHHMM,
+    buildTextFromFields,
+    esc,
+
+    // lists state + persistence
+    getDOCENTES_PALETTE: () => DOCENTES_PALETTE,
+    setDOCENTES_PALETTE: (obj) => { DOCENTES_PALETTE = obj || {}; },
+    saveDocentesPalette: (obj) => saveDocentesPalette(obj),
+
+    getMODALIDADES: () => MODALIDADES,
+    setMODALIDADES: (arr) => { MODALIDADES = Array.isArray(arr) ? arr : []; },
+    saveModalidades: (arr) => saveModalidades(arr),
+
+    // Firestore callbacks
+    onSave: async ({ ctx, payload }) => {
+      if (!ctx) return;
+      if (READ_ONLY) return;
+
+      const endMin = Number(payload.endMin);
+      const salonIndex = Number(payload.salonIndex);
+      const startMin = Number(payload.startMin);
+
+      if (!payload.text){
+        alert('Ponle algo al bloque (Grupo/Docente o Texto final).');
+        return;
+      }
+      if (!isWithinBounds(startMin, endMin)){
+        alert('Hora fin inválida o fuera de rango.');
+        return;
+      }
+
+      const overlaps = hasOverlap({
+        ignoreId: ctx.mode === 'edit' ? ctx.id : null,
+        salonIndex,
+        startMin,
+        endMin
+      });
+      if (overlaps){
+        alert('Ese bloque se cruza con otro en el mismo salón.');
+        return;
+      }
+
+      const finalPayload = {
+        hoja: payload.hoja || ctx.hoja || currentHoja,
+        salonIndex,
+        startMin,
+        endMin,
+        text: payload.text,
+        note: payload.note || '',
+        grupo: payload.grupo || '',
+        docente: payload.docente || '',
+        modalidad: payload.modalidad || '',
+        updatedAt: serverTimestamp()
+      };
+
+      try{
+        if (ctx.mode === 'new'){
+          finalPayload.createdAt = serverTimestamp();
+          await addDoc(collection(db, 'blocks'), finalPayload);
+        }else{
+          await updateDoc(doc(db, 'blocks', ctx.id), finalPayload);
+        }
+        modalAPI?.closeModal?.();
+      }catch(err){
+        console.error(err);
+        alert('No se pudo guardar. Revisa conexión/permisos.');
+      }
+    },
+
+    onDelete: async ({ ctx }) => {
+      if (!ctx || ctx.mode !== 'edit') return;
+      if (READ_ONLY) return;
+
+      try{
+        await deleteDoc(doc(db, 'blocks', ctx.id));
+        modalAPI?.closeModal?.();
+      }catch(err){
+        console.error(err);
+        alert('No se pudo borrar. Revisa conexión/permisos.');
+      }
     }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's'){
-      e.preventDefault();
-      $btnSave?.click();
-    }
-  }
-});
-
-$btnSave && ($btnSave.onclick = async () => {
-  if (!modalCtx) return;
-  if (READ_ONLY) return;
-
-  const endMin = Number($mEnd?.value);
-  const salonIndex = modalCtx.salonIndex;
-  const startMin = modalCtx.startMin;
-
-  const { grupo, docente, modalidad, note, text } = getModalProPayload();
-  const finalText = text || buildTextFromFields({ grupo, docente, modalidad, note });
-
-  if (!finalText){
-    alert('Ponle algo al bloque (Grupo/Docente o Texto final).');
-    return;
-  }
-  if (!isWithinBounds(startMin, endMin)){
-    alert('Hora fin inválida o fuera de rango.');
-    return;
-  }
-
-  const overlaps = hasOverlap({
-    ignoreId: modalCtx.mode === 'edit' ? modalCtx.id : null,
-    salonIndex,
-    startMin,
-    endMin
   });
-  if (overlaps){
-    alert('Ese bloque se cruza con otro en el mismo salón.');
-    return;
-  }
-
-  const payload = {
-    hoja: modalCtx.hoja,
-    salonIndex,
-    startMin,
-    endMin,
-    text: finalText,
-    note,
-    grupo,
-    docente,
-    modalidad,
-    updatedAt: serverTimestamp()
-  };
-
-  try{
-    if (modalCtx.mode === 'new'){
-      payload.createdAt = serverTimestamp();
-      await addDoc(collection(db, 'blocks'), payload);
-    }else{
-      await updateDoc(doc(db, 'blocks', modalCtx.id), payload);
-    }
-    closeModal();
-  }catch(err){
-    console.error(err);
-    alert('No se pudo guardar. Revisa conexión/permisos.');
-  }
-});
-
-$btnDelete && ($btnDelete.onclick = async () => {
-  if (!modalCtx || modalCtx.mode !== 'edit') return;
-  if (READ_ONLY) return;
-  if (!confirm('¿Eliminar este bloque?')) return;
-
-  try{
-    await deleteDoc(doc(db, 'blocks', modalCtx.id));
-    closeModal();
-  }catch(err){
-    console.error(err);
-    alert('No se pudo borrar. Revisa conexión/permisos.');
-  }
-});
+}
 
 /* =============================================================================
    Clock
@@ -2043,6 +1692,7 @@ buildHeader();
 ensureMiniCardStylesOnce();
 ensureStickyRoomsCSS();
 bindGridDelegationOnce();
+initModalPro();
 
 setNet(false, 'conectando');
 setLoad(false, 'Cargando…', 'Inicializando…');
