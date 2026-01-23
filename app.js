@@ -32,7 +32,7 @@ const CFG = (() => {
   return {
     days: c.days || ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"],
     slotMinutes: c.slotMinutes ?? 30,
-    startMin: c.startMin ?? (9*60 + 30),
+    startMin: c.startMin ?? (8*60 + 0),
     endMin: c.endMin ?? (20*60),
     rooms: c.rooms || [
       "Salón 1:\nBaile",
@@ -1750,3 +1750,4 @@ function withTimeout(promise, ms, label='timeout'){
 
   refreshAllViews();
 })();
+
