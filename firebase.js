@@ -1,7 +1,7 @@
-// firebase.js — Musicala Horario (Firebase v10.7.1) — PRO init (SAFE)
-// - Singleton safe (no dup init si se importa varias veces)
-// - Firestore cache persistente (multi-tab) cuando se puede
-// - Emuladores SOLO en localhost (evita sabotaje en GitHub Pages)
+// firebase.js - Musicala Horario (Firebase v10.7.1)
+// - Singleton safe: no duplica initializeApp si se importa varias veces.
+// - Firestore con cache persistente multi-tab cuando el navegador lo permite.
+// - Emuladores solo cuando se activan explicitamente con window.APP_CONFIG.useEmulators = true.
 
 import { initializeApp, getApp, getApps } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, connectAuthEmulator } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -26,11 +26,19 @@ const firebaseConfig = {
 };
 
 /* =========================
-   ENV: Emuladores SOLO local
-   (GitHub Pages jamás debería intentar pegarle a localhost)
+   ENV
 ========================= */
-const IS_LOCALHOST = ["localhost", "127.0.0.1"].includes(location.hostname);
-const USE_EMULATORS = IS_LOCALHOST;
+const appConfig = window.APP_CONFIG || {};
+const IS_LOCALHOST = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+const USE_EMULATORS = appConfig.useEmulators === true;
+
+export const FIREBASE_RUNTIME = Object.freeze({
+  isLocalhost: IS_LOCALHOST,
+  useEmulators: USE_EMULATORS,
+  firestoreSource: USE_EMULATORS ? "emulator" : "real",
+  authSource: USE_EMULATORS ? "emulator" : "real",
+  projectId: firebaseConfig.projectId
+});
 
 /* =========================
    APP singleton
@@ -48,36 +56,40 @@ export const auth = getAuth(app);
 let _db;
 
 try {
-  // initializeFirestore SOLO debe llamarse una vez por app.
-  // Cache persistente multi-tab (mejor experiencia offline/latencia).
   _db = initializeFirestore(app, {
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager()
     })
   });
 } catch (err) {
-  // Si falla (Safari raro / ya inicializado), caemos a getFirestore sin drama
   _db = getFirestore(app);
 }
 
 export const db = _db;
 
 /* =========================
-   EMULATORS (opcional, local only)
+   EMULATORS (manual opt-in)
 ========================= */
 if (USE_EMULATORS) {
-  // Evitar doble conexión si hot-reload o imports múltiples
-  if (!window.__FIREBASE_EMULATORS_CONNECTED__) {
+  if (!IS_LOCALHOST) {
+    console.warn("[Firebase] useEmulators=true fue ignorado porque no estas en localhost.");
+  } else if (!window.__FIREBASE_EMULATORS_CONNECTED__) {
     window.__FIREBASE_EMULATORS_CONNECTED__ = true;
 
-    // Auth emulator
     try {
       connectAuthEmulator(auth, "http://localhost:9099", { disableWarnings: true });
-    } catch (_) {}
+      console.info("[Firebase] Auth conectado al emulador: localhost:9099");
+    } catch (err) {
+      console.warn("[Firebase] No se pudo conectar Auth al emulador.", err);
+    }
 
-    // Firestore emulator
     try {
       connectFirestoreEmulator(db, "localhost", 8080);
-    } catch (_) {}
+      console.info("[Firebase] Firestore conectado al emulador: localhost:8080");
+    } catch (err) {
+      console.warn("[Firebase] No se pudo conectar Firestore al emulador.", err);
+    }
   }
+} else {
+  console.info(`[Firebase] Usando Firebase real (${firebaseConfig.projectId}). Localhost no activa emuladores automaticamente.`);
 }

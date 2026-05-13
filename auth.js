@@ -1,108 +1,62 @@
-// auth.js — Musicala Horario (Firebase Auth) — PRO
-// - NO reinicializa Firebase (eso lo hace firebase.js)
-// - Garantiza sesión anónima (idempotente)
-// - Espera estado de auth listo (evita race conditions)
-// - Helpers útiles para debug y futuro control de roles
+// auth.js - Musicala Horario (Firebase Auth v10.7.1)
+// Login opcional con Google. La lectura publica depende de Firestore Rules.
 
 import { auth } from "./firebase.js";
 import {
+  GoogleAuthProvider,
   onAuthStateChanged,
-  signInAnonymously,
+  signInWithPopup,
   signOut
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
-/* =========================
-   Utils
-========================= */
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+export const ADMIN_EMAILS = [
+  "imusicala@gmail.com",
+  "musicalaasesor@gmail.com",
+  "alekcaballeromusic@gmail.com",
+  "catalina.medina.leal@gmail.com"
+];
+
+function normalizeEmail(email){
+  return String(email || "").trim().toLowerCase();
+}
 
 function normalizeAuthError(err){
-  const code = err?.code || '';
-  const msg  = err?.message || 'Error de autenticación';
-
-  // Mensajes un poquito más humanos, sin sermones
-  if (code === 'auth/operation-not-allowed'){
-    return new Error(
-      "En Firebase Console, habilita 'Anonymous' en Authentication → Sign-in method."
-    );
-  }
-  if (code === 'auth/network-request-failed'){
-    return new Error("Falló la red. Revisa internet o bloqueos del navegador.");
-  }
-  if (code === 'auth/too-many-requests'){
-    return new Error("Demasiados intentos seguidos. Espera un toque y vuelve a intentar.");
-  }
-  return new Error(msg);
+  const code = err?.code || "";
+  if (code === "auth/popup-closed-by-user") return new Error("Inicio de sesion cancelado.");
+  if (code === "auth/popup-blocked") return new Error("El navegador bloqueo la ventana de Google.");
+  if (code === "auth/operation-not-allowed") return new Error("Habilita Google como proveedor en Firebase Authentication.");
+  if (code === "auth/network-request-failed") return new Error("Fallo la red. Revisa internet o bloqueos del navegador.");
+  return new Error(err?.message || "No se pudo iniciar sesion.");
 }
 
-/* =========================
-   State gate: wait auth ready
-========================= */
-let _authReadyPromise = null;
+export function isAdminEmail(email){
+  return ADMIN_EMAILS.includes(normalizeEmail(email));
+}
 
-export function waitAuthReady(){
-  if (_authReadyPromise) return _authReadyPromise;
+export function getCurrentUser(){
+  return auth.currentUser || null;
+}
 
-  _authReadyPromise = new Promise((resolve) => {
-    const unsub = onAuthStateChanged(auth, () => {
-      unsub();
-      resolve(true);
+export function onUserChanged(callback){
+  return onAuthStateChanged(auth, (user) => {
+    callback(user || null, {
+      isAdmin: isAdminEmail(user?.email),
+      email: normalizeEmail(user?.email)
     });
   });
-
-  return _authReadyPromise;
 }
 
-/* =========================
-   Ensure anonymous session
-========================= */
-let _ensurePromise = null;
-
-export async function ensureAnon({ force = false, retries = 2 } = {}){
-  // Asegura que auth ya resolvió el estado inicial
-  await waitAuthReady();
-
-  // Si ya hay usuario y no forzamos, listo
-  if (!force && auth.currentUser) return auth.currentUser;
-
-  // Evitar múltiples signIn simultáneos
-  if (_ensurePromise) return _ensurePromise;
-
-  _ensurePromise = (async () => {
-    let lastErr = null;
-
-    for (let i=0; i<=retries; i++){
-      try{
-        // Si en un retry ya hay user, no insistimos
-        if (auth.currentUser && !force) return auth.currentUser;
-
-        const cred = await signInAnonymously(auth);
-        return cred.user;
-      }catch(err){
-        lastErr = err;
-
-        // backoff simple
-        await sleep(350 + i*450);
-      }
-    }
-
-    throw normalizeAuthError(lastErr);
-  })();
-
+export async function loginWithGoogle(){
   try{
-    return await _ensurePromise;
-  }finally{
-    _ensurePromise = null;
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    const cred = await signInWithPopup(auth, provider);
+    return cred.user;
+  }catch(err){
+    throw normalizeAuthError(err);
   }
 }
 
-/* =========================
-   Helpers
-========================= */
-export function getUid(){
-  return auth.currentUser?.uid || null;
-}
-
-export async function signOutNow(){
+export async function logout(){
   await signOut(auth);
 }

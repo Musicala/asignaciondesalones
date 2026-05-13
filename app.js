@@ -1,6 +1,6 @@
-// app.js
-import { ensureAnon } from "./auth.js";
-import { db } from "./firebase.js";
+﻿// app.js
+import { loginWithGoogle, logout, onUserChanged, isAdminEmail } from "./auth.js";
+import { db, FIREBASE_RUNTIME } from "./firebase.js";
 import { setupModalPro } from "./modalPro.js";
 
 import {
@@ -178,6 +178,12 @@ const qsa = (s,root=document)=>Array.from(root.querySelectorAll(s));
 const $selHoja = qs('#selHoja');
 const $toggleEdit = qs('#toggleEdit');
 const $btnFull = qs('#btnFull');
+const $editControl = qs('#editControl');
+const $authBadge = qs('#authBadge');
+const $authText = qs('#authText');
+const $btnLoginGoogle = qs('#btnLoginGoogle');
+const $btnLogout = qs('#btnLogout');
+const $tablaHelp = qs('#tablaHelp');
 
 const $dot = qs('#dot');
 const $netText = qs('#netText');
@@ -189,6 +195,7 @@ const $statusMsg = qs('#statusMsg');
 
 const $thead = qs('#thead');
 const $tbody = qs('#tbody');
+const $tableWrap = qs('.tableWrap');
 
 // Modal DOM (los maneja modalPro.js)
 const $modalBack = qs('#modalBack');
@@ -264,8 +271,12 @@ let vivoTimer = null;
 
 // Auth/runtime
 let AUTH_OK = false;
-let READ_ONLY = false;
+let IS_ADMIN = false;
+let CURRENT_USER = null;
+let READ_ONLY = true;
 let LAST_ERR = null;
+let LAST_SNAPSHOT_FROM_CACHE = null;
+let LAST_BLOCKS_COUNT = 0;
 
 // Pointer Drag state
 let dragState = null;
@@ -292,6 +303,96 @@ function setLoad(ok, text, msg){
   }
   if ($loadText) $loadText.textContent = text;
   if ($statusMsg) $statusMsg.textContent = msg || '';
+}
+
+function isDevMode(){
+  return window.APP_CONFIG?.showDebugPanel === true;
+}
+
+function renderDiagnostics(){
+  if (!isDevMode()){
+    qs('#devDiagnostics')?.remove();
+    return;
+  }
+
+  let panel = qs('#devDiagnostics');
+  if (!panel){
+    panel = document.createElement('aside');
+    panel.id = 'devDiagnostics';
+    panel.className = 'devDiagnostics';
+    panel.setAttribute('aria-label', 'Diagnostico de desarrollo');
+    document.body.appendChild(panel);
+  }
+
+  const source = FIREBASE_RUNTIME.useEmulators ? 'Emulador' : 'Firestore real';
+  const cache = LAST_SNAPSHOT_FROM_CACHE === null ? 'sin snapshot' : (LAST_SNAPSHOT_FROM_CACHE ? 'cache' : 'server');
+  const auth = IS_ADMIN ? 'admin activo' : (CURRENT_USER ? 'sin permisos' : 'publico');
+
+  panel.innerHTML = `
+    <div class="devDiagTitle">Diagnostico local</div>
+    <div><strong>Dia:</strong> ${esc(currentHoja)}</div>
+    <div><strong>Bloques:</strong> ${LAST_BLOCKS_COUNT}</div>
+    <div><strong>Origen:</strong> ${esc(cache)}</div>
+    <div><strong>Firebase:</strong> ${esc(source)}</div>
+    <div><strong>Auth:</strong> ${esc(auth)}</div>
+  `;
+}
+
+function isAdminTab(tab){
+  return ['salas','docentes','buscar','kpis'].includes(tab);
+}
+
+function setActiveTabSafe(tab){
+  const next = (!IS_ADMIN && isAdminTab(tab)) ? 'tabla' : (tab || 'tabla');
+  if (typeof window.setActiveTab === 'function') window.setActiveTab(next);
+  else window.__ACTIVE_TAB__ = next;
+}
+
+function applyAccessUI(){
+  READ_ONLY = !IS_ADMIN;
+  if (!IS_ADMIN){
+    EDIT_MODE = false;
+    if ($toggleEdit) $toggleEdit.checked = false;
+    cancelDrag();
+  }
+
+  document.body.classList.toggle('isAdmin', IS_ADMIN);
+  document.body.classList.toggle('isPublic', !IS_ADMIN);
+  qsa('.adminOnly').forEach(el => { el.hidden = !IS_ADMIN; });
+
+  if ($editControl) $editControl.hidden = !IS_ADMIN;
+  if ($tablaHelp){
+    $tablaHelp.innerHTML = IS_ADMIN
+      ? 'Tip: activa <strong>Editar</strong> para crear/modificar bloques.<br />Drag & drop: arrastra para mover. Mantén <strong>Alt/Ctrl</strong> para copiar.'
+      : 'Vista de consulta del horario Musicala.';
+  }
+
+  if ($btnLoginGoogle){
+    $btnLoginGoogle.hidden = !!CURRENT_USER && IS_ADMIN;
+    $btnLoginGoogle.textContent = CURRENT_USER && !IS_ADMIN ? 'Cambiar cuenta' : 'Acceso admin';
+  }
+  if ($btnLogout) $btnLogout.hidden = !CURRENT_USER;
+
+  if ($authBadge){
+    $authBadge.textContent = IS_ADMIN ? 'Admin' : 'Consulta';
+    $authBadge.classList.toggle('admin', IS_ADMIN);
+  }
+
+  if ($authText){
+    if (IS_ADMIN){
+      $authText.textContent = CURRENT_USER?.email || 'Admin Musicala';
+    }else if (CURRENT_USER){
+      $authText.textContent = 'Sesión iniciada sin permisos de edición';
+    }else{
+      $authText.textContent = 'Vista de consulta del horario Musicala';
+    }
+  }
+
+  if (!IS_ADMIN && isAdminTab(activeTab())) setActiveTabSafe('tabla');
+  showEditBadge(IS_ADMIN && EDIT_MODE);
+  showDragBadge(false);
+  renderDiagnostics();
+  refreshAllViews();
 }
 
 function esc(s){
@@ -368,19 +469,31 @@ function ensureStickyRoomsCSS(){
       background: rgba(255,255,255,.94);
       backdrop-filter: blur(8px);
     }
-    table.grid thead th:nth-child(2),
-    table.grid tbody td:nth-child(2){
-      position: sticky;
-      left: 86px;
-      z-index: 7;
-      background: rgba(255,255,255,.92);
-      backdrop-filter: blur(8px);
-      box-shadow: 10px 0 24px rgba(15,23,42,.08);
-    }
     @media (max-width: 560px){
-      table.grid thead th:nth-child(2),
-      table.grid tbody td:nth-child(2){
-        left: 72px;
+      table.grid tbody th:first-child,
+      table.grid tbody td{
+        position: static;
+        left: auto;
+        z-index: auto;
+        box-shadow: none;
+        backdrop-filter: none;
+      }
+      table.grid thead{
+        position: sticky;
+        top: 0;
+        z-index: 20;
+      }
+      table.grid thead th{
+        position: sticky;
+        top: 0;
+        z-index: 21;
+        background: rgba(255,255,255,.96);
+        backdrop-filter: blur(8px);
+        box-shadow: 0 8px 18px rgba(15,23,42,.08);
+      }
+      table.grid thead th:first-child{
+        left: auto;
+        z-index: 22;
       }
     }
   `;
@@ -405,6 +518,50 @@ function buildHeader(){
 
   $thead.innerHTML = '';
   $thead.appendChild(tr);
+}
+
+function ensureMobileSalonHeader(){
+  if (!$tableWrap || qs('#mobileSalonHeader')) return;
+
+  const header = document.createElement('div');
+  header.id = 'mobileSalonHeader';
+  header.className = 'mobileSalonHeader';
+  header.setAttribute('aria-hidden', 'true');
+
+  header.innerHTML = `
+    <div class="mobileSalonHeaderInner">
+      <div class="mobileSalonTime">Hora</div>
+      ${SALONES.map((s, i) => `
+        <div class="mobileSalonName">${esc(salonLabel(i))}</div>
+      `).join('')}
+    </div>
+  `;
+
+  document.body.appendChild(header);
+
+  const update = () => {
+    const isMobile = window.matchMedia('(max-width: 560px)').matches;
+    const active = activeTab() === 'tabla';
+    if (!isMobile || !active){
+      header.classList.remove('show');
+      return;
+    }
+
+    const rect = $tableWrap.getBoundingClientRect();
+    const shouldShow = rect.top < 0 && rect.bottom > 54;
+    header.classList.toggle('show', shouldShow);
+    if (!shouldShow) return;
+
+    header.style.left = `${Math.max(0, rect.left)}px`;
+    header.style.width = `${Math.min(window.innerWidth, rect.width)}px`;
+    header.querySelector('.mobileSalonHeaderInner').style.transform = `translateX(${-($tableWrap.scrollLeft || 0)}px)`;
+  };
+
+  window.addEventListener('scroll', update, { passive:true });
+  window.addEventListener('resize', update);
+  $tableWrap.addEventListener('scroll', update, { passive:true });
+  window.addEventListener('tabchange', update);
+  update();
 }
 
 function reindexBlocks(){
@@ -1044,10 +1201,15 @@ function refreshAllViews(){
   if (tab === 'docentes') renderDocentes();
   if (tab === 'buscar') renderBuscar();
   if (tab === 'kpis') renderKPIs();
+  renderDiagnostics();
 }
 
 window.addEventListener('tabchange', (e)=>{
   const tab = e?.detail?.tab || activeTab();
+  if (!IS_ADMIN && isAdminTab(tab)){
+    setActiveTabSafe('tabla');
+    return;
+  }
   if (tab === 'vivo') renderVivo();
   if (tab === 'salas') renderSalas();
   if (tab === 'docentes') renderDocentes();
@@ -1355,6 +1517,25 @@ $txtQuery?.addEventListener('keydown', (e)=>{
   if (e.key === 'Enter') renderBuscar();
 });
 
+$btnLoginGoogle?.addEventListener('click', async () => {
+  try{
+    setLoad(false, 'Ingresando...', 'Abriendo Google para acceso admin');
+    await loginWithGoogle();
+  }catch(err){
+    console.warn(err);
+    setLoad(true, 'Listo', err?.message || 'No se pudo iniciar sesion');
+  }
+});
+
+$btnLogout?.addEventListener('click', async () => {
+  try{
+    await logout();
+  }catch(err){
+    console.warn(err);
+    setLoad(true, 'Listo', err?.message || 'No se pudo cerrar sesion');
+  }
+});
+
 /* =============================================================================
    KPIs tab
 ============================================================================= */
@@ -1363,87 +1544,199 @@ function renderKPIs(){
   ensureMiniCardStylesOnce();
 
   const totalSlots = SLOTS.length * SALONES.length;
-  let usedSlots = 0;
-  const blocksCount = blocks.length;
+  const dayBlocks = blocks.filter(b => (b.hoja || currentHoja) === currentHoja);
+
+  if (!dayBlocks.length){
+    $kpisWrap.innerHTML = `
+      <div class="kpiEmpty">
+        <div class="kpiEmptyTitle">No hay bloques para ${esc(currentHoja)}</div>
+        <div class="kpiEmptyText">Cuando se creen clases para este dia, las estadisticas apareceran automaticamente aqui.</div>
+      </div>
+    `;
+    return;
+  }
 
   const usedBySalon = Array.from({length:SALONES.length}, ()=>0);
   const blocksBySalon = Array.from({length:SALONES.length}, ()=>0);
+  const docStats = new Map();
+  const modalityStats = new Map();
+  const slotDistribution = new Map();
+  const incomplete = [];
+  let usedSlots = 0;
 
-  for (const b of blocks){
-    const span = Math.max(1, Math.round((b.endMin - b.startMin)/STEP_MIN));
+  const addStats = (map, key, slots) => {
+    const cleanKey = (key || 'Sin dato').trim() || 'Sin dato';
+    const prev = map.get(cleanKey) || { blocks:0, slots:0 };
+    prev.blocks += 1;
+    prev.slots += slots;
+    map.set(cleanKey, prev);
+  };
+
+  for (const b of dayBlocks){
+    const span = Math.max(1, Math.round((Number(b.endMin) - Number(b.startMin))/STEP_MIN));
     const s = Number(b.salonIndex);
+    const docente = normalizeName(b.docente) || normalizeName(parseDocenteFromText(b.text || ''));
+    const modalidad = normalizeName(b.modalidad);
+    const grupo = normalizeName(b.grupo);
+
     if (Number.isFinite(s) && s>=0 && s<SALONES.length){
       usedBySalon[s] += span;
       blocksBySalon[s] += 1;
       usedSlots += span;
     }
+
+    if (docente) addStats(docStats, docente, span);
+    addStats(modalityStats, modalidad || 'Sin modalidad', span);
+    addStats(slotDistribution, formatRange(b.startMin, b.endMin), span);
+
+    const missing = [];
+    if (!docente) missing.push('docente');
+    if (!grupo && !normalizeName(blockDisplayText(b))) missing.push('grupo');
+    if (!modalidad) missing.push('modalidad');
+    if (!Number.isFinite(s) || s<0 || s>=SALONES.length) missing.push('salon');
+    if (!isWithinBounds(Number(b.startMin), Number(b.endMin))) missing.push('hora');
+    if (missing.length) incomplete.push({ block:b, missing });
   }
 
   const occ = totalSlots ? (usedSlots/totalSlots) : 0;
   const totalHours = (usedSlots * STEP_MIN)/60;
+  const emptyRooms = SALONES.map((_,i)=>i).filter(i => blocksBySalon[i] === 0);
+  const topSalonIdx = usedBySalon.reduce((best, slots, idx) => slots > usedBySalon[best] ? idx : best, 0);
 
-  let topSalonIdx = 0;
-  let topSalonOcc = 0;
-  for (let i=0;i<SALONES.length;i++){
-    const occSalon = usedBySalon[i] / SLOTS.length;
-    if (occSalon > topSalonOcc){
-      topSalonOcc = occSalon;
-      topSalonIdx = i;
-    }
-  }
+  const sortStats = (map) => Array.from(map.entries())
+    .map(([name, data]) => ({ name, ...data, hours:(data.slots * STEP_MIN)/60 }))
+    .sort((a,b)=> b.slots - a.slots || a.name.localeCompare(b.name,'es'));
 
-  const docCount = collectDocentes().length;
+  const salonRanking = SALONES.map((_,i)=>({
+    index:i,
+    name: salonLabel(i),
+    blocks: blocksBySalon[i],
+    slots: usedBySalon[i],
+    hours: (usedBySalon[i] * STEP_MIN)/60,
+    pct: SLOTS.length ? usedBySalon[i]/SLOTS.length : 0
+  })).sort((a,b)=> b.slots - a.slots || a.index - b.index);
 
-  const kpiHTML = `
+  const docRanking = sortStats(docStats);
+  const modalityRanking = sortStats(modalityStats);
+  const slotRanking = sortStats(slotDistribution).slice(0, 8);
+  const hoursLabel = (n) => `${Number(n).toFixed(Number.isInteger(n) ? 0 : 1)} h`;
+  const bar = (pct) => `<div class="kpiBar" aria-hidden="true"><span style="width:${clamp(Math.round(pct*100),0,100)}%"></span></div>`;
+
+  $kpisWrap.innerHTML = `
+    <div class="kpiToolbar">
+      <div>
+        <div class="kpiPageTitle">Indicadores de ${esc(currentHoja)}</div>
+        <div class="kpiPageSub">${esc(FIREBASE_RUNTIME.useEmulators ? 'Firestore emulador' : 'Firestore real')} - ${LAST_SNAPSHOT_FROM_CACHE ? 'cache' : 'server'}</div>
+      </div>
+      <button id="btnKpisRefreshInline" class="btnTop" type="button">Actualizar</button>
+    </div>
+
     <div class="kpiGrid">
-      <div class="kpiBox">
-        <div class="kpiLabel">Ocupación total</div>
+      <div class="kpiBox kpiBoxHero">
+        <div class="kpiLabel">Ocupacion total</div>
         <div class="kpiValue">${Math.round(occ*100)}%</div>
-        <div class="kpiHint">${usedSlots} / ${totalSlots} slots</div>
+        <div class="kpiHint">${usedSlots} / ${totalSlots} slots del dia</div>
       </div>
       <div class="kpiBox">
         <div class="kpiLabel">Horas programadas</div>
-        <div class="kpiValue">${totalHours.toFixed(1)}</div>
-        <div class="kpiHint">(${STEP_MIN} min por slot)</div>
+        <div class="kpiValue">${hoursLabel(totalHours)}</div>
+        <div class="kpiHint">${STEP_MIN} min por slot</div>
       </div>
       <div class="kpiBox">
         <div class="kpiLabel">Bloques</div>
-        <div class="kpiValue">${blocksCount}</div>
-        <div class="kpiHint">En el día: ${esc(currentHoja)}</div>
+        <div class="kpiValue">${dayBlocks.length}</div>
+        <div class="kpiHint">Registros cargados del dia</div>
       </div>
       <div class="kpiBox">
-        <div class="kpiLabel">Docentes</div>
-        <div class="kpiValue">${docCount}</div>
-        <div class="kpiHint">Detectados + palette</div>
+        <div class="kpiLabel">Docentes reales</div>
+        <div class="kpiValue">${docStats.size}</div>
+        <div class="kpiHint">Solo bloques del dia, sin palette</div>
       </div>
     </div>
 
-    <div style="margin-top:14px;"></div>
+    <div class="kpiPanels">
+      ${makeMiniCard({
+        title: "Ocupacion por salon",
+        subtitle: `Mas ocupado: ${usedBySalon[topSalonIdx] ? salonLabel(topSalonIdx) : 'sin ocupacion'}`,
+        rightPill: `${emptyRooms.length} vacio(s)`,
+        contentHtml: salonRanking.map(item => `
+          <div class="kpiRankItem">
+            <div class="kpiRankTop">
+              <div>
+                <div class="listMain">${esc(item.name)}</div>
+                <div class="listMeta">${item.blocks} bloque(s) - ${hoursLabel(item.hours)}</div>
+              </div>
+              <div class="pillTime">${Math.round(item.pct*100)}%</div>
+            </div>
+            ${bar(item.pct)}
+          </div>
+        `).join('')
+      })}
 
-    ${makeMiniCard({
-      title: "Detalle por salón",
-      subtitle: "Ocupación y bloques",
-      rightPill: `Top: ${salonLabel(topSalonIdx)}`,
-      contentHtml: SALONES.map((_,i)=>{
-        const o = usedBySalon[i]/SLOTS.length;
-        return `
+      ${makeMiniCard({
+        title: "Docentes con mas horas",
+        subtitle: "Horas y bloques reales del dia",
+        rightPill: `${docRanking.length} docente(s)`,
+        contentHtml: docRanking.length ? docRanking.slice(0, 10).map(item => `
           <div class="listItem">
             <div class="listLeft">
-              <div class="listMain">${esc(salonLabel(i))}</div>
-              <div class="listMeta">${blocksBySalon[i]} bloque(s) · ${usedBySalon[i]} slot(s)</div>
+              <div class="listMain">${esc(item.name)}</div>
+              <div class="listMeta">${item.blocks} bloque(s)</div>
             </div>
-            <div class="listRight">
-              <div class="pillTime">${Math.round(o*100)}%</div>
-            </div>
+            <div class="listRight"><div class="pillTime">${hoursLabel(item.hours)}</div></div>
           </div>
-        `;
-      }).join('')
+        `).join('') : `<div class="kpiSoftAlert">No hay docentes identificados en los bloques.</div>`
+      })}
+
+      ${makeMiniCard({
+        title: "Modalidades usadas",
+        subtitle: "Sede, Virtual u otras",
+        rightPill: `${modalityRanking.length} tipo(s)`,
+        contentHtml: modalityRanking.map(item => `
+          <div class="listItem">
+            <div class="listLeft">
+              <div class="listMain">${esc(item.name)}</div>
+              <div class="listMeta">${item.blocks} bloque(s)</div>
+            </div>
+            <div class="listRight"><div class="pillTime">${hoursLabel(item.hours)}</div></div>
+          </div>
+        `).join('')
+      })}
+
+      ${makeMiniCard({
+        title: "Franjas horarias",
+        subtitle: "Distribucion por bloques",
+        rightPill: `${slotDistribution.size} franja(s)`,
+        contentHtml: slotRanking.map(item => `
+          <div class="listItem">
+            <div class="listLeft">
+              <div class="listMain">${esc(item.name)}</div>
+              <div class="listMeta">${item.blocks} bloque(s)</div>
+            </div>
+            <div class="listRight"><div class="pillTime">${hoursLabel(item.hours)}</div></div>
+          </div>
+        `).join('')
+      })}
+    </div>
+
+    ${makeMiniCard({
+      title: "Calidad de datos",
+      subtitle: "Bloques incompletos o con datos faltantes",
+      rightPill: `${incomplete.length} alerta(s)`,
+      contentHtml: incomplete.length ? incomplete.slice(0, 12).map(item => `
+        <div class="kpiAlertItem">
+          <div>
+            <div class="listMain">${esc(blockDisplayText(item.block))}</div>
+            <div class="listMeta">${esc(formatRange(item.block.startMin, item.block.endMin))} - ${esc(salonLabel(item.block.salonIndex))}</div>
+          </div>
+          <div class="kpiMissing">${esc(item.missing.join(', '))}</div>
+        </div>
+      `).join('') : `<div class="kpiOk">Todos los bloques del dia tienen docente, grupo/modalidad basica y horario valido.</div>`
     })}
   `;
 
-  $kpisWrap.innerHTML = kpiHTML;
+  qs('#btnKpisRefreshInline')?.addEventListener('click', renderKPIs);
 }
-
 $btnKpisRefresh?.addEventListener('click', renderKPIs);
 
 /* =============================================================================
@@ -1494,6 +1787,7 @@ function listenHoja(hoja){
 
   unsub = onSnapshot(qy, (snap) => {
     const fromCache = snap.metadata?.fromCache;
+    LAST_SNAPSHOT_FROM_CACHE = !!fromCache;
 
     if (READ_ONLY){
       setNet(true, fromCache ? 'solo lectura (cache)' : 'solo lectura (server)');
@@ -1502,14 +1796,17 @@ function listenHoja(hoja){
     }
 
     blocks = snap.docs.map(d => sanitizeBlock({ id:d.id, ...d.data() }));
+    LAST_BLOCKS_COUNT = blocks.length;
     reindexBlocks();
 
     setLoad(true, 'Listo', fromCache ? 'Mostrando datos cacheados' : 'Sincronizado');
     refreshAllViews();
   }, (err) => {
     console.error(err);
+    LAST_ERR = err;
     setNet(false, 'error');
     setLoad(false, 'Error', humanFirestoreError(err));
+    renderDiagnostics();
   });
 }
 
@@ -1523,7 +1820,7 @@ $toggleEdit?.addEventListener('change', () => {
     showEditBadge(false);
     showDragBadge(false);
     cancelDrag();
-    alert('Edición bloqueada: no hay sesión (Auth anónimo). La tabla sí carga, pero no se puede editar.');
+    setLoad(true, 'Listo', 'Edición disponible solo para admins de Musicala.');
     refreshAllViews();
     return;
   }
@@ -1689,6 +1986,7 @@ tick();
    Init (GitHub-safe)
 ============================================================================= */
 buildHeader();
+ensureMobileSalonHeader();
 ensureMiniCardStylesOnce();
 ensureStickyRoomsCSS();
 bindGridDelegationOnce();
@@ -1696,16 +1994,7 @@ initModalPro();
 
 setNet(false, 'conectando');
 setLoad(false, 'Cargando…', 'Inicializando…');
-showEditBadge(!!$toggleEdit?.checked);
-
-// Helper timeout para auth
-function withTimeout(promise, ms, label='timeout'){
-  let t;
-  const timeout = new Promise((_, rej)=>{
-    t = setTimeout(()=>rej(new Error(label)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(()=>clearTimeout(t));
-}
+showEditBadge(false);
 
 (async function init(){
   // Auto día real
@@ -1716,38 +2005,25 @@ function withTimeout(promise, ms, label='timeout'){
   listenHoja(currentHoja);
   startVivoAutoRefresh();
 
-  // 2) Intento Auth anónimo para habilitar edición
-  try{
-    await withTimeout(ensureAnon(), 4500, 'Auth tardó demasiado');
-    AUTH_OK = true;
-    READ_ONLY = false;
+  onUserChanged((user) => {
+    CURRENT_USER = user;
+    AUTH_OK = !!user;
+    IS_ADMIN = isAdminEmail(user?.email);
+    READ_ONLY = !IS_ADMIN;
     LAST_ERR = null;
 
-    setNet(true, 'conectado');
-    setLoad(true, 'Listo', 'Sesión lista (edición disponible)');
-
-    EDIT_MODE = !!$toggleEdit?.checked;
-    showEditBadge(EDIT_MODE);
-
-  }catch(e){
-    AUTH_OK = false;
-    READ_ONLY = true;
-    LAST_ERR = e;
-
-    if ($toggleEdit){
-      $toggleEdit.checked = false;
+    if (IS_ADMIN){
+      setLoad(true, 'Listo', 'Sesión admin lista (edición disponible)');
+    }else if (user){
+      setLoad(true, 'Listo', 'Sesión iniciada sin permisos de edición');
+    }else{
+      setLoad(true, 'Listo', 'Vista pública de consulta');
     }
-    EDIT_MODE = false;
-    showEditBadge(false);
-    showDragBadge(false);
-    cancelDrag();
 
-    setNet(true, 'solo lectura');
-    setLoad(true, 'Listo', 'Modo solo lectura (Auth anónimo no quedó listo)');
+    applyAccessUI();
+  });
 
-    console.warn('Auth anon no disponible. Continuando en solo lectura.', e);
-  }
-
+  applyAccessUI();
   refreshAllViews();
 })();
 

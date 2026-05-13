@@ -157,12 +157,19 @@
         </select>
       </div>
 
-      <div class="ctl">
+      <div class="ctl editControl" id="editControl" hidden>
         <span style="font-weight:900;">Editar</span>
         <label class="switch" title="Modo edición">
           <input id="toggleEdit" type="checkbox" />
           <span class="slider" aria-hidden="true"></span>
         </label>
+      </div>
+
+      <div class="authBox" id="authBox" aria-live="polite">
+        <span id="authBadge" class="authBadge">Consulta</span>
+        <span id="authText" class="authText">Vista de consulta del horario Musicala</span>
+        <button id="btnLoginGoogle" class="btnTop btnAuth" type="button">Acceso admin</button>
+        <button id="btnLogout" class="btnTop btnAuth" type="button" hidden>Cerrar sesión</button>
       </div>
 
       <button id="btnFull" class="btnTop" type="button" title="Pantalla completa">
@@ -182,10 +189,10 @@
   <nav class="tabs" role="tablist" aria-label="Vistas">
     <button class="tab active" role="tab" aria-selected="true" data-tab="tabla" type="button">Tabla</button>
     <button class="tab" role="tab" aria-selected="false" data-tab="vivo" type="button">En vivo (-1 / ahora / +1)</button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="salas" type="button">Salones</button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="docentes" type="button">Docentes</button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="buscar" type="button">Buscar</button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="kpis" type="button">KPIs</button>
+    <button class="tab adminOnly" role="tab" aria-selected="false" data-tab="salas" type="button" hidden>Salones</button>
+    <button class="tab adminOnly" role="tab" aria-selected="false" data-tab="docentes" type="button" hidden>Docentes</button>
+    <button class="tab adminOnly" role="tab" aria-selected="false" data-tab="buscar" type="button" hidden>Buscar</button>
+    <button class="tab adminOnly" role="tab" aria-selected="false" data-tab="kpis" type="button" hidden>KPIs</button>
   </nav>
 
   <!-- ===== MAIN ===== -->
@@ -200,7 +207,7 @@
           <div class="statusMsg" id="statusMsg">Inicializando…</div>
         </div>
 
-        <div class="actionsGhost" aria-hidden="true">
+        <div class="actionsGhost adminOnly" aria-hidden="true" hidden>
           <span>Editar</span>
           <span>Cerrar</span>
           <span>Copiar</span>
@@ -223,7 +230,7 @@
           </table>
         </div>
 
-        <div style="padding:12px 14px;color:var(--muted);font-weight:800">
+        <div id="tablaHelp" class="viewHint">
           Tip: activa <strong>Editar</strong> para crear/modificar bloques.
           <br />
           Drag & drop: arrastra para mover. Mantén <strong>Alt/Ctrl</strong> para copiar.
@@ -431,6 +438,9 @@
   <!-- App config -->
   <script>
     window.APP_CONFIG = {
+      useEmulators: false,
+      debug: false,
+      showDebugPanel: false,
       days: ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"],
       slotMinutes: 30,
       startMin: 8*60 + 0,
@@ -494,7 +504,3 @@
   </script>
 </body>
 </html>
-
-
-
-
