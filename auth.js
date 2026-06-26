@@ -11,6 +11,7 @@ import {
 
 export const ADMIN_EMAILS = [
   "imusicala@gmail.com",
+  "adminmusicala@gmail.com",
   "musicalaasesor@gmail.com",
   "alekcaballeromusic@gmail.com",
   "catalina.medina.leal@gmail.com"
